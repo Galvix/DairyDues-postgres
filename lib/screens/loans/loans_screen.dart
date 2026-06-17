@@ -2,7 +2,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:intl/intl.dart';
 import '../../database/models.dart';
 import '../../providers/app_provider.dart';
 import '../../theme/app_theme.dart';

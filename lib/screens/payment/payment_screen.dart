@@ -12,7 +12,6 @@ import 'package:printing/printing.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:path_provider/path_provider.dart';
 import '../../database/api_service.dart';
-import '../../database/models.dart';
 import '../../providers/app_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/payment_calculator.dart';
