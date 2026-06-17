@@ -1,0 +1,60 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "deliveries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "milkmanId", "order": "ASCENDING" },
+        { "fieldPath": "deliveryDate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deliveryDate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "khoya",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "milkmanId", "order": "ASCENDING" },
+        { "fieldPath": "deliveryDate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "loans",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "milkmanId", "order": "ASCENDING" },
+        { "fieldPath": "loanDate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "loans",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "milkmanId", "order": "ASCENDING" },
+        { "fieldPath": "loanDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "weeklyPayments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "milkmanId", "order": "ASCENDING" },
+        { "fieldPath": "weekStartDate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "weeklyPayments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "milkmanId", "order": "ASCENDING" },
+        { "fieldPath": "weekStartDate", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
