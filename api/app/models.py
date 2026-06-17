@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 # ─── Milkmen ────────────────────────────────────────────────────────────────
 
 class MilkmanCreate(BaseModel):
+    id: UUID | None = None          # client-generated id for offline-first upserts
     name: str
     milk_rate: float
     khoya_rate: float
@@ -34,6 +35,7 @@ class Milkman(MilkmanCreate):
 # ─── Milk Deliveries ─────────────────────────────────────────────────────────
 
 class MilkDeliveryCreate(BaseModel):
+    id: UUID | None = None             # client-generated id for offline-first upserts
     delivery_date: datetime            # supports multiple entries/day (morning + evening)
     gross_weight: float = 0
     can_weight: float = 0
@@ -51,6 +53,7 @@ class MilkDelivery(MilkDeliveryCreate):
 # ─── Khoya Deliveries ────────────────────────────────────────────────────────
 
 class KhoyaDeliveryCreate(BaseModel):
+    id: UUID | None = None             # client-generated id for offline-first upserts
     delivery_date: datetime
     weight: float
     notes: str = ""
@@ -64,6 +67,7 @@ class KhoyaDelivery(KhoyaDeliveryCreate):
 # ─── Paneer Entries ──────────────────────────────────────────────────────────
 
 class PaneerEntryCreate(BaseModel):
+    id: UUID | None = None             # client-generated id for offline-first upserts
     milkman_id: UUID
     delivery_id: UUID                  # the specific milk_deliveries row being tested
     entry_date: date
@@ -90,6 +94,7 @@ class PaneerEntry(BaseModel):
 # ─── Loans ───────────────────────────────────────────────────────────────────
 
 class LoanCreate(BaseModel):
+    id: UUID | None = None             # client-generated id for offline-first upserts
     amount: float
     loan_date: datetime
     notes: str = ""
@@ -157,3 +162,11 @@ class PrintJob(BaseModel):
 class PrintJobStatusUpdate(BaseModel):
     status: str                         # "done" | "failed"
     error: str | None = None
+
+
+# ─── Mark weekly payment paid by natural key ─────────────────────────────────
+# Lets the offline-first app settle a week without knowing the server-assigned
+# payment id (which it may not have if the payment was upserted while offline).
+
+class MarkPaidByWeek(BaseModel):
+    week_start_date: datetime

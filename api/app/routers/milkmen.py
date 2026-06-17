@@ -1,6 +1,6 @@
 # app/routers/milkmen.py
 
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth import require_auth
 from app.database import get_pool
@@ -31,13 +31,22 @@ async def create_milkman(
     _: None = Depends(require_auth),
 ):
     pool = get_pool()
+    # Upsert by id so an offline-created milkman re-syncs idempotently. The id is
+    # client-generated when present, otherwise minted here.
     row = await pool.fetchrow(
         """
-        INSERT INTO milkmen (name, milk_rate, khoya_rate, supplies_khoya, is_active)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO milkmen (id, name, milk_rate, khoya_rate, supplies_khoya, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (id) DO UPDATE SET
+            name           = EXCLUDED.name,
+            milk_rate      = EXCLUDED.milk_rate,
+            khoya_rate     = EXCLUDED.khoya_rate,
+            supplies_khoya = EXCLUDED.supplies_khoya,
+            is_active      = EXCLUDED.is_active
         RETURNING *
         """,
-        body.name, body.milk_rate, body.khoya_rate, body.supplies_khoya, body.is_active,
+        body.id or uuid4(), body.name, body.milk_rate, body.khoya_rate,
+        body.supplies_khoya, body.is_active,
     )
     return dict(row)
 

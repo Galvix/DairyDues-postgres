@@ -1,9 +1,11 @@
 from datetime import date, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import HTTPException, APIRouter, Depends, status
 from app.auth import require_auth
 from app.database import get_pool
-from app.models import Loan, LoanCreate, WeeklyPayment, WeeklyPaymentCreate
+from app.models import (
+    Loan, LoanCreate, WeeklyPayment, WeeklyPaymentCreate, MarkPaidByWeek,
+)
 
 router = APIRouter(tags=["payments"])
 
@@ -34,11 +36,15 @@ async def create_loan(
     pool = get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO loans (milkman_id, amount, loan_date, notes)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO loans (id, milkman_id, amount, loan_date, notes)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (id) DO UPDATE SET
+            amount    = EXCLUDED.amount,
+            loan_date = EXCLUDED.loan_date,
+            notes     = EXCLUDED.notes
         RETURNING *
         """,
-        milkman_id, body.amount, body.loan_date, body.notes,
+        body.id or uuid4(), milkman_id, body.amount, body.loan_date, body.notes,
     )
     return dict(row)
  
@@ -64,7 +70,7 @@ async def list_payments(
     *,
     _: None = Depends(require_auth),
 ):
-    pool = get_pool(),
+    pool = get_pool()
     rows = await pool.fetch(
         "SELECT * FROM weekly_payments WHERE milkman_id = $1 ORDER BY week_start_date DESC",
         milkman_id,
@@ -151,8 +157,34 @@ async def mark_payment_paid(
     if not row:
         raise HTTPException(status_code=404, detail="Payment not found")
     return dict(row)
- 
- 
+
+
+@router.patch("/milkmen/{milkman_id}/payments/mark-paid", response_model=WeeklyPayment)
+async def mark_payment_paid_by_week(
+    milkman_id: UUID,
+    body: MarkPaidByWeek,
+    *,
+    _: None = Depends(require_auth),
+):
+    """
+    Mark a week's payment paid by its natural key (milkman + week_start), so the
+    offline-first app can settle a week without the server-assigned payment id.
+    """
+    pool = get_pool()
+    row = await pool.fetchrow(
+        """
+        UPDATE weekly_payments
+        SET is_paid = TRUE, paid_at = now()
+        WHERE milkman_id = $1 AND week_start_date = $2
+        RETURNING *
+        """,
+        milkman_id, body.week_start_date,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return dict(row)
+
+
 # ─── Hisab calculation (server-side) ─────────────────────────────────────────
  
 @router.get("/milkmen/{milkman_id}/hisab")

@@ -1,7 +1,7 @@
 # app/routers/deliveries.py
 
 from datetime import date
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth import require_auth
 from app.database import get_pool
@@ -49,19 +49,45 @@ async def create_milk_delivery(
     pool = get_pool()
     # billable_milk starts equal to net_milk; it's only overwritten once a
     # paneer test runs against this delivery (see paneer entry creation below).
+    # Upsert by id (client-generated when offline). On replay we refresh the
+    # editable fields but preserve billable_milk / paneer_adjusted so an already
+    # applied paneer test isn't reset.
     row = await pool.fetchrow(
         """
         INSERT INTO milk_deliveries (
-            milkman_id, delivery_date, gross_weight, can_weight, net_milk,
+            id, milkman_id, delivery_date, gross_weight, can_weight, net_milk,
             billable_milk, notes
         )
-        VALUES ($1, $2, $3, $4, $5, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+        ON CONFLICT (id) DO UPDATE SET
+            delivery_date = EXCLUDED.delivery_date,
+            gross_weight  = EXCLUDED.gross_weight,
+            can_weight    = EXCLUDED.can_weight,
+            net_milk      = EXCLUDED.net_milk,
+            notes         = EXCLUDED.notes
         RETURNING *
         """,
-        milkman_id, body.delivery_date, body.gross_weight, body.can_weight,
-        body.net_milk, body.notes,
+        body.id or uuid4(), milkman_id, body.delivery_date, body.gross_weight,
+        body.can_weight, body.net_milk, body.notes,
     )
     return dict(row)
+
+
+@router.delete("/milkmen/{milkman_id}/deliveries/{delivery_id}",
+               status_code=status.HTTP_204_NO_CONTENT)
+async def delete_milk_delivery(
+    milkman_id: UUID,
+    delivery_id: UUID,
+    *,
+    _: None = Depends(require_auth),
+):
+    pool = get_pool()
+    result = await pool.execute(
+        "DELETE FROM milk_deliveries WHERE id = $1 AND milkman_id = $2",
+        delivery_id, milkman_id,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Delivery not found")
 
 
 # ─── Khoya Deliveries ────────────────────────────────────────────────────────
@@ -112,13 +138,34 @@ async def create_khoya_delivery(
 
     row = await pool.fetchrow(
         """
-        INSERT INTO khoya_deliveries (milkman_id, delivery_date, weight, notes)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO khoya_deliveries (id, milkman_id, delivery_date, weight, notes)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (id) DO UPDATE SET
+            delivery_date = EXCLUDED.delivery_date,
+            weight        = EXCLUDED.weight,
+            notes         = EXCLUDED.notes
         RETURNING *
         """,
-        milkman_id, body.delivery_date, body.weight, body.notes,
+        body.id or uuid4(), milkman_id, body.delivery_date, body.weight, body.notes,
     )
     return dict(row)
+
+
+@router.delete("/milkmen/{milkman_id}/khoya/{khoya_id}",
+               status_code=status.HTTP_204_NO_CONTENT)
+async def delete_khoya_delivery(
+    milkman_id: UUID,
+    khoya_id: UUID,
+    *,
+    _: None = Depends(require_auth),
+):
+    pool = get_pool()
+    result = await pool.execute(
+        "DELETE FROM khoya_deliveries WHERE id = $1 AND milkman_id = $2",
+        khoya_id, milkman_id,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Khoya delivery not found")
 
 
 # ─── Paneer Entries ──────────────────────────────────────────────────────────
@@ -184,15 +231,24 @@ async def create_paneer_entry(
             entry = await conn.fetchrow(
                 """
                 INSERT INTO paneer_entries (
-                    milkman_id, delivery_id, entry_date,
+                    id, milkman_id, delivery_id, entry_date,
                     total_milk_used, expected_paneer, actual_paneer,
                     yield_ratio, tolerance_kg,
                     adjustment_applied, adjusted_milk_total
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8, TRUE, $9)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, TRUE, $10)
+                ON CONFLICT (id) DO UPDATE SET
+                    entry_date          = EXCLUDED.entry_date,
+                    total_milk_used     = EXCLUDED.total_milk_used,
+                    expected_paneer     = EXCLUDED.expected_paneer,
+                    actual_paneer       = EXCLUDED.actual_paneer,
+                    yield_ratio         = EXCLUDED.yield_ratio,
+                    tolerance_kg        = EXCLUDED.tolerance_kg,
+                    adjustment_applied  = TRUE,
+                    adjusted_milk_total = EXCLUDED.adjusted_milk_total
                 RETURNING *
                 """,
-                milkman_id, body.delivery_id, body.entry_date,
+                body.id or uuid4(), milkman_id, body.delivery_id, body.entry_date,
                 body.total_milk_used, body.expected_paneer, body.actual_paneer,
                 yield_ratio, body.tolerance_kg,
                 adjusted_milk_total,
