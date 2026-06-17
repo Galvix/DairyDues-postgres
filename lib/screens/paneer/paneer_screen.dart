@@ -15,19 +15,63 @@ class PaneerScreen extends StatefulWidget {
   State<PaneerScreen> createState() => _PaneerScreenState();
 }
 
+class _PaneerData {
+  final List<MilkDelivery> deliveries;
+  final Map<String, Milkman> milkmanMap;
+  final List<PaneerEntry> paneerForDate;
+  final List<PaneerEntry> recent;
+  _PaneerData(this.deliveries, this.milkmanMap, this.paneerForDate, this.recent);
+}
+
 class _PaneerScreenState extends State<PaneerScreen> {
   DateTime _date = DateTime.now();
+  late Future<_PaneerData> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<_PaneerData> _load() async {
+    final db = context.read<AppProvider>().db;
+    final dateOnly = DateTime(_date.year, _date.month, _date.day);
+    final results = await Future.wait([
+      db.getDeliveriesForDate(dateOnly),
+      db.getActiveMilkmen(),
+      db.getPaneerEntriesForDate(dateOnly),
+      db.getRecentPaneerEntries(limit: 20),
+    ]);
+    final deliveries = results[0] as List<MilkDelivery>;
+    final milkmen = results[1] as List<Milkman>;
+    final paneerForDate = results[2] as List<PaneerEntry>;
+    final recent = results[3] as List<PaneerEntry>;
+    return _PaneerData(
+      deliveries,
+      {for (final m in milkmen) m.id: m},
+      paneerForDate,
+      recent,
+    );
+  }
+
+  Future<void> _refresh() async {
+    final f = _load();
+    setState(() => _future = f);
+    await f.catchError((_) => _PaneerData([], {}, [], []));
+  }
 
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<AppProvider>();
-    final db = provider.db;
-    final dateOnly = DateTime(_date.year, _date.month, _date.day);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Paneer Entry'),
         actions: [
+          IconButton(
+              onPressed: _refresh,
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh'),
           TextButton.icon(
             onPressed: () async {
               final p = await showDatePicker(
@@ -35,7 +79,10 @@ class _PaneerScreenState extends State<PaneerScreen> {
                   initialDate: _date,
                   firstDate: DateTime(2020),
                   lastDate: DateTime.now());
-              if (p != null) setState(() => _date = p);
+              if (p != null) {
+                setState(() => _date = p);
+                _refresh();
+              }
             },
             icon: const Icon(Icons.calendar_today, color: Colors.white, size: 16),
             label: Text(DateFormat('dd MMM').format(_date),
@@ -43,181 +90,184 @@ class _PaneerScreenState extends State<PaneerScreen> {
           ),
         ],
       ),
-      body: StreamBuilder<List<MilkDelivery>>(
-        stream: db.watchDeliveriesForDate(dateOnly),
-        builder: (context, delivSnap) {
-          final deliveries = delivSnap.data ?? [];
-          final totalMilk = deliveries.fold<double>(0.0, (s, d) => s + d.netMilk);
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: FutureBuilder<_PaneerData>(
+          future: _future,
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snap.hasError) {
+              return ListView(children: [
+                const SizedBox(height: 80),
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(children: [
+                      const Icon(Icons.cloud_off, color: Colors.red, size: 44),
+                      const SizedBox(height: 12),
+                      Text('${snap.error}',
+                          textAlign: TextAlign.center,
+                          style:
+                              const TextStyle(color: Colors.red, fontSize: 12)),
+                    ]),
+                  ),
+                ),
+              ]);
+            }
 
-          // Group net milk by milkman
-          final Map<String, double> milkPerMan = {};
-          for (final d in deliveries) {
-            milkPerMan[d.milkmanId] = (milkPerMan[d.milkmanId] ?? 0) + d.netMilk;
-          }
+            final data = snap.data!;
+            final deliveries = data.deliveries;
+            final milkmanMap = data.milkmanMap;
+            final dateOnly = DateTime(_date.year, _date.month, _date.day);
+            final totalMilk =
+                deliveries.fold<double>(0.0, (s, d) => s + d.netMilk);
 
-          return StreamBuilder<List<Milkman>>(
-            stream: db.watchActiveMilkmen(),
-            builder: (context, milkmenSnap) {
-              final milkmanMap = {
-                for (final m in (milkmenSnap.data ?? [])) m.id: m
-              };
+            final Map<String, double> milkPerMan = {};
+            for (final d in deliveries) {
+              milkPerMan[d.milkmanId] = (milkPerMan[d.milkmanId] ?? 0) + d.netMilk;
+            }
 
-              return StreamBuilder<List<PaneerEntry>>(
-                stream: db.watchPaneerEntriesForDate(dateOnly),
-                builder: (context, paneerSnap) {
-                  final paneerByMilkman = <String, PaneerEntry>{};
-                  for (final e in (paneerSnap.data ?? [])) {
-                    if (e.milkmanId != null) paneerByMilkman[e.milkmanId!] = e;
-                  }
+            final paneerByMilkman = <String, PaneerEntry>{};
+            for (final e in data.paneerForDate) {
+              if (e.milkmanId != null) paneerByMilkman[e.milkmanId!] = e;
+            }
 
-                  final doneCount = paneerByMilkman.length;
-                  final total = milkPerMan.length;
+            final doneCount = paneerByMilkman.length;
+            final total = milkPerMan.length;
+            final recentEntries =
+                data.recent.where((e) => e.milkmanId != null).toList();
 
-                  return SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // ── Summary ──────────────────────────────────────
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(14),
-                            child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    DateFormat('dd MMM yyyy').format(_date),
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(children: [
-                                    _StatusChip(
-                                      '${totalMilk.toStringAsFixed(1)} kg total',
-                                      Colors.blue,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    _StatusChip(
-                                      '$doneCount / $total done',
-                                      doneCount == total && total > 0
-                                          ? AppTheme.success
-                                          : AppTheme.warning,
-                                    ),
-                                  ]),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Standard: ${provider.sampleMilkKg.toStringAsFixed(0)} kg milk → ${provider.standardPaneerKg.toStringAsFixed(2)} kg paneer',
-                                    style: TextStyle(
-                                        fontSize: 12, color: Colors.grey[600]),
-                                  ),
-                                ]),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-
-                        // ── Milkman list ──────────────────────────────────
-                        if (milkPerMan.isEmpty)
-                          Center(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 48),
-                              child: Column(children: [
-                                Icon(Icons.local_drink_outlined,
-                                    size: 56, color: Colors.grey[300]),
-                                const SizedBox(height: 12),
-                                Text('No milk entries for this date',
-                                    style: TextStyle(color: Colors.grey[500])),
-                              ]),
+            return SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ── Summary ──────────────────────────────────────
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              DateFormat('dd MMM yyyy').format(_date),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 15),
                             ),
-                          )
-                        else ...[
-                          const SectionHeader(title: 'MILKMEN'),
-                          const SizedBox(height: 8),
-                          ...milkPerMan.entries.map((entry) {
-                            final milkman = milkmanMap[entry.key];
-                            final paneerEntry = paneerByMilkman[entry.key];
-                            return _MilkmanPaneerCard(
-                              milkmanName: milkman?.name ?? '?',
-                              netMilk: entry.value,
-                              paneerEntry: paneerEntry,
-                              standardPaneerKg: provider.standardPaneerKg,
-                              onTap: paneerEntry == null
-                                  ? () => _enterPaneerFor(
-                                        context,
-                                        milkman?.name ?? '?',
-                                        entry.key,
-                                        entry.value,
-                                        dateOnly,
-                                      )
-                                  : null,
-                            );
-                          }),
-                        ],
-
-                        const SizedBox(height: 16),
-                        const SectionHeader(title: 'RECENT HISTORY'),
-                        const SizedBox(height: 8),
-                        StreamBuilder<List<PaneerEntry>>(
-                          stream: db.watchRecentPaneerEntries(limit: 20),
-                          builder: (context, snap) {
-                            final entries = (snap.data ?? [])
-                                .where((e) => e.milkmanId != null)
-                                .toList();
-                            if (entries.isEmpty) {
-                              return Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 16),
-                                child: Text('No history yet',
-                                    style:
-                                        TextStyle(color: Colors.grey[500])),
-                              );
-                            }
-                            return Column(
-                              children: entries
-                                  .map((e) => Card(
-                                        margin:
-                                            const EdgeInsets.only(bottom: 8),
-                                        child: ListTile(
-                                          leading: Icon(
-                                            e.adjustmentApplied
-                                                ? Icons.warning_amber_outlined
-                                                : Icons.check_circle_outline,
-                                            color: e.adjustmentApplied
-                                                ? AppTheme.warning
-                                                : AppTheme.success,
-                                          ),
-                                          title: Text(
-                                            '${milkmanMap[e.milkmanId]?.name ?? e.milkmanId ?? '?'}  —  ${DateFormat('dd MMM yyyy').format(e.entryDate)}',
-                                          ),
-                                          subtitle: Text(
-                                            'Milk: ${e.totalMilkUsed.toStringAsFixed(1)} kg  •  Sample: ${e.actualPaneer.toStringAsFixed(3)} / ${e.expectedPaneer.toStringAsFixed(2)} kg',
-                                          ),
-                                          trailing: e.adjustmentApplied
-                                              ? Chip(
-                                                  label: Text('Adjusted',
-                                                      style: TextStyle(
-                                                          fontSize: 11,
-                                                          color: AppTheme
-                                                              .warning)),
-                                                  backgroundColor:
-                                                      AppTheme.warning
-                                                          .withOpacity(0.1),
-                                                )
-                                              : null,
-                                        ),
-                                      ))
-                                  .toList(),
-                            );
-                          },
-                        ),
-                      ],
+                            const SizedBox(height: 8),
+                            Row(children: [
+                              _StatusChip(
+                                '${totalMilk.toStringAsFixed(1)} kg total',
+                                Colors.blue,
+                              ),
+                              const SizedBox(width: 8),
+                              _StatusChip(
+                                '$doneCount / $total done',
+                                doneCount == total && total > 0
+                                    ? AppTheme.success
+                                    : AppTheme.warning,
+                              ),
+                            ]),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Standard: ${provider.sampleMilkKg.toStringAsFixed(0)} kg milk → ${provider.standardPaneerKg.toStringAsFixed(2)} kg paneer',
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.grey[600]),
+                            ),
+                          ]),
                     ),
-                  );
-                },
-              );
-            },
-          );
-        },
+                  ),
+                  const SizedBox(height: 12),
+
+                  // ── Milkman list ──────────────────────────────────
+                  if (milkPerMan.isEmpty)
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 48),
+                        child: Column(children: [
+                          Icon(Icons.local_drink_outlined,
+                              size: 56, color: Colors.grey[300]),
+                          const SizedBox(height: 12),
+                          Text('No milk entries for this date',
+                              style: TextStyle(color: Colors.grey[500])),
+                        ]),
+                      ),
+                    )
+                  else ...[
+                    const SectionHeader(title: 'MILKMEN'),
+                    const SizedBox(height: 8),
+                    ...milkPerMan.entries.map((entry) {
+                      final milkman = milkmanMap[entry.key];
+                      final paneerEntry = paneerByMilkman[entry.key];
+                      return _MilkmanPaneerCard(
+                        milkmanName: milkman?.name ?? '?',
+                        netMilk: entry.value,
+                        paneerEntry: paneerEntry,
+                        standardPaneerKg: provider.standardPaneerKg,
+                        onTap: paneerEntry == null
+                            ? () => _enterPaneerFor(
+                                  context,
+                                  milkman?.name ?? '?',
+                                  entry.key,
+                                  entry.value,
+                                  dateOnly,
+                                )
+                            : null,
+                      );
+                    }),
+                  ],
+
+                  const SizedBox(height: 16),
+                  const SectionHeader(title: 'RECENT HISTORY'),
+                  const SizedBox(height: 8),
+                  if (recentEntries.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Text('No history yet',
+                          style: TextStyle(color: Colors.grey[500])),
+                    )
+                  else
+                    Column(
+                      children: recentEntries
+                          .map((e) => Card(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                child: ListTile(
+                                  leading: Icon(
+                                    e.adjustmentApplied
+                                        ? Icons.warning_amber_outlined
+                                        : Icons.check_circle_outline,
+                                    color: e.adjustmentApplied
+                                        ? AppTheme.warning
+                                        : AppTheme.success,
+                                  ),
+                                  title: Text(
+                                    '${milkmanMap[e.milkmanId]?.name ?? e.milkmanId ?? '?'}  —  ${DateFormat('dd MMM yyyy').format(e.entryDate)}',
+                                  ),
+                                  subtitle: Text(
+                                    'Milk: ${e.totalMilkUsed.toStringAsFixed(1)} kg  •  Sample: ${e.actualPaneer.toStringAsFixed(3)} / ${e.expectedPaneer.toStringAsFixed(2)} kg',
+                                  ),
+                                  trailing: e.adjustmentApplied
+                                      ? Chip(
+                                          label: Text('Adjusted',
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: AppTheme.warning)),
+                                          backgroundColor:
+                                              AppTheme.warning.withOpacity(0.1),
+                                        )
+                                      : null,
+                                ),
+                              ))
+                          .toList(),
+                    ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -248,6 +298,7 @@ class _PaneerScreenState extends State<PaneerScreen> {
 
     if (result != null && mounted) {
       _showResult(context, milkmanName, result);
+      _refresh();
     }
   }
 

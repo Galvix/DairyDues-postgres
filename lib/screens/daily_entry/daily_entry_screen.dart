@@ -19,6 +19,10 @@ class _DailyEntryScreenState extends State<DailyEntryScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
+  // Bumped whenever an entry is added, so the visible tab reloads (the REST API
+  // has no push updates — see MIGRATION_REPORT.md).
+  int _reloadToken = 0;
+
   @override
   void initState() {
     super.initState();
@@ -82,107 +86,200 @@ class _DailyEntryScreenState extends State<DailyEntryScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          _MilkTab(date: dateOnly),
-          _KhoyaTab(date: dateOnly),
+          _MilkTab(date: dateOnly, reloadToken: _reloadToken),
+          _KhoyaTab(date: dateOnly, reloadToken: _reloadToken),
         ],
       ),
     );
   }
 
-  void _showAddMilk(BuildContext context, DateTime date) {
-    showModalBottomSheet(
+  Future<void> _showAddMilk(BuildContext context, DateTime date) async {
+    final added = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      // FIX: Pass provider to modal via ChangeNotifierProvider.value
       builder: (_) => ChangeNotifierProvider.value(
         value: context.read<AppProvider>(),
         child: _AddMilkSheet(date: date),
       ),
     );
+    if (added == true) setState(() => _reloadToken++);
   }
 
-  void _showAddKhoya(BuildContext context, DateTime date) {
-    showModalBottomSheet(
+  Future<void> _showAddKhoya(BuildContext context, DateTime date) async {
+    final added = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      // FIX: Pass provider to modal via ChangeNotifierProvider.value
       builder: (_) => ChangeNotifierProvider.value(
         value: context.read<AppProvider>(),
         child: _AddKhoyaSheet(date: date),
       ),
     );
+    if (added == true) setState(() => _reloadToken++);
   }
 }
 
 // ─── MILK TAB ─────────────────────────────────────────────────────────────────
 
-class _MilkTab extends StatelessWidget {
+class _MilkTabData {
+  final List<MilkDelivery> deliveries;
+  final Map<String, Milkman> milkmenMap;
+  _MilkTabData(this.deliveries, this.milkmenMap);
+}
+
+class _MilkTab extends StatefulWidget {
   final DateTime date;
-  const _MilkTab({required this.date});
+  final int reloadToken;
+  const _MilkTab({required this.date, required this.reloadToken});
+
+  @override
+  State<_MilkTab> createState() => _MilkTabState();
+}
+
+class _MilkTabState extends State<_MilkTab> {
+  late Future<_MilkTabData> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  @override
+  void didUpdateWidget(_MilkTab old) {
+    super.didUpdateWidget(old);
+    if (old.date != widget.date || old.reloadToken != widget.reloadToken) {
+      setState(() => _future = _load());
+    }
+  }
+
+  Future<_MilkTabData> _load() async {
+    final db = context.read<AppProvider>().db;
+    final results = await Future.wait([
+      db.getDeliveriesForDate(widget.date),
+      db.getActiveMilkmen(),
+    ]);
+    final deliveries = results[0] as List<MilkDelivery>;
+    final milkmen = results[1] as List<Milkman>;
+    return _MilkTabData(deliveries, {for (final m in milkmen) m.id: m});
+  }
+
+  Future<void> _refresh() async {
+    final f = _load();
+    setState(() => _future = f);
+    await f.catchError((_) => _MilkTabData([], {}));
+  }
+
+  Future<void> _delete(MilkDelivery d) async {
+    final db = context.read<AppProvider>().db;
+    try {
+      await db.deleteMilkDelivery(d.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final db = context.read<AppProvider>().db;
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: FutureBuilder<_MilkTabData>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snap.hasError) {
+            return _DailyErrorView(error: snap.error.toString(), onRetry: _refresh);
+          }
+          final deliveries = snap.data?.deliveries ?? [];
+          final milkmenMap = snap.data?.milkmenMap ?? {};
+          final total = deliveries.fold<double>(0.0, (s, d) => s + d.netMilk);
+          final billable =
+              deliveries.fold<double>(0.0, (s, d) => s + d.billableMilk);
+          final hasAdj = deliveries.any((d) => d.paneerAdjusted);
 
-    return StreamBuilder<List<MilkDelivery>>(
-      stream: db.watchDeliveriesForDate(date),
-      builder: (context, snap) {
-        final deliveries = snap.data ?? [];
-        final total = deliveries.fold<double>(0.0, (s, d) => s + d.netMilk);
-        final billable = deliveries.fold<double>(0.0, (s, d) => s + d.billableMilk);
-        final hasAdj = deliveries.any((d) => d.paneerAdjusted);
-
-        return Column(children: [
-          // Summary bar
-          Container(
-            color: AppTheme.primary.withOpacity(0.06),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: Row(children: [
-              _Chip('Total: ${DateHelpers.formatWeight(total)}', Colors.blue),
-              const SizedBox(width: 12),
-              _Chip('Billable: ${DateHelpers.formatWeight(billable)}',
-                  hasAdj ? AppTheme.warning : AppTheme.success),
-              const SizedBox(width: 12),
-              _Chip('${deliveries.length} entries', AppTheme.primary),
-            ]),
-          ),
-          Expanded(
-            // FIX: Use StreamBuilder for milkmen too, or load once
-            child: StreamBuilder<List<Milkman>>(
-              stream: db.watchActiveMilkmen(),
-              builder: (context, ms) {
-                final milkmenMap = {for (var m in (ms.data ?? [])) m.id: m};
-                if (deliveries.isEmpty) {
-                  return Center(
-                    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      Icon(Icons.local_drink_outlined, size: 56, color: Colors.grey[300]),
-                      const SizedBox(height: 12),
-                      Text('No milk entries', style: TextStyle(color: Colors.grey[500])),
-                    ]),
-                  );
-                }
-                return ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
-                  itemCount: deliveries.length,
-                  itemBuilder: (context, i) {
-                    final d = deliveries[i];
-                    return _MilkCard(
-                      delivery: d,
-                      milkmanName: milkmenMap[d.milkmanId]?.name ?? '?',
-                      onDelete: () => db.deleteMilkDelivery(d.id),
-                    );
-                  },
-                );
-              },
+          return Column(children: [
+            // Summary bar
+            Container(
+              color: AppTheme.primary.withOpacity(0.06),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(children: [
+                _Chip('Total: ${DateHelpers.formatWeight(total)}', Colors.blue),
+                const SizedBox(width: 12),
+                _Chip('Billable: ${DateHelpers.formatWeight(billable)}',
+                    hasAdj ? AppTheme.warning : AppTheme.success),
+                const SizedBox(width: 12),
+                _Chip('${deliveries.length} entries', AppTheme.primary),
+              ]),
             ),
-          ),
-        ]);
-      },
+            Expanded(
+              child: deliveries.isEmpty
+                  ? ListView(children: [
+                      const SizedBox(height: 120),
+                      Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        Icon(Icons.local_drink_outlined,
+                            size: 56, color: Colors.grey[300]),
+                        const SizedBox(height: 12),
+                        Text('No milk entries',
+                            style: TextStyle(color: Colors.grey[500])),
+                      ]),
+                    ])
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
+                      itemCount: deliveries.length,
+                      itemBuilder: (context, i) {
+                        final d = deliveries[i];
+                        return _MilkCard(
+                          delivery: d,
+                          milkmanName: milkmenMap[d.milkmanId]?.name ?? '?',
+                          onDelete: () => _delete(d),
+                        );
+                      },
+                    ),
+            ),
+          ]);
+        },
+      ),
     );
+  }
+}
+
+/// Error view used by the daily-entry tabs.
+class _DailyErrorView extends StatelessWidget {
+  final String error;
+  final Future<void> Function() onRetry;
+  const _DailyErrorView({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(children: [
+      const SizedBox(height: 80),
+      Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(children: [
+          const Icon(Icons.cloud_off, color: Colors.red, size: 44),
+          const SizedBox(height: 12),
+          Text(error,
+              style: const TextStyle(color: Colors.red, fontSize: 12),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Retry'),
+          ),
+        ]),
+      ),
+    ]);
   }
 }
 
@@ -249,57 +346,123 @@ class _MilkCard extends StatelessWidget {
 
 // ─── KHOYA TAB ────────────────────────────────────────────────────────────────
 
-class _KhoyaTab extends StatelessWidget {
+class _KhoyaTabData {
+  final List<KhoyaDelivery> entries;
+  final Map<String, Milkman> milkmenMap;
+  _KhoyaTabData(this.entries, this.milkmenMap);
+}
+
+class _KhoyaTab extends StatefulWidget {
   final DateTime date;
-  const _KhoyaTab({required this.date});
+  final int reloadToken;
+  const _KhoyaTab({required this.date, required this.reloadToken});
+
+  @override
+  State<_KhoyaTab> createState() => _KhoyaTabState();
+}
+
+class _KhoyaTabState extends State<_KhoyaTab> {
+  late Future<_KhoyaTabData> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  @override
+  void didUpdateWidget(_KhoyaTab old) {
+    super.didUpdateWidget(old);
+    if (old.date != widget.date || old.reloadToken != widget.reloadToken) {
+      setState(() => _future = _load());
+    }
+  }
+
+  Future<_KhoyaTabData> _load() async {
+    final db = context.read<AppProvider>().db;
+    final results = await Future.wait([
+      db.getKhoyaForDate(widget.date),
+      db.getActiveMilkmen(),
+    ]);
+    final entries = results[0] as List<KhoyaDelivery>;
+    final milkmen = results[1] as List<Milkman>;
+    return _KhoyaTabData(entries, {for (final m in milkmen) m.id: m});
+  }
+
+  Future<void> _refresh() async {
+    final f = _load();
+    setState(() => _future = f);
+    await f.catchError((_) => _KhoyaTabData([], {}));
+  }
+
+  Future<void> _delete(KhoyaDelivery k) async {
+    final db = context.read<AppProvider>().db;
+    try {
+      await db.deleteKhoyaDelivery(k.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final db = context.read<AppProvider>().db;
-
-    return StreamBuilder<List<KhoyaDelivery>>(
-      stream: db.watchKhoyaForDate(date),
-      builder: (context, snap) {
-        final entries = snap.data ?? [];
-        if (entries.isEmpty) {
-          return Center(
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.inventory_2_outlined, size: 56, color: Colors.grey[300]),
-              const SizedBox(height: 12),
-              Text('No khoya entries', style: TextStyle(color: Colors.grey[500])),
-            ]),
-          );
-        }
-        return StreamBuilder<List<Milkman>>(
-          stream: db.watchActiveMilkmen(),
-          builder: (context, ms) {
-            final milkmenMap = {for (var m in (ms.data ?? [])) m.id: m};
-            return ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
-              itemCount: entries.length,
-              itemBuilder: (context, i) {
-                final k = entries[i];
-                final name = milkmenMap[k.milkmanId]?.name ?? '?';
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: Colors.orange.withOpacity(0.12),
-                      child: Text(name[0], style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
-                    ),
-                    title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Text('${k.weight.toStringAsFixed(2)} kg'),
-                    trailing: IconButton(
-                      icon: Icon(Icons.delete_outline, color: Colors.red[300], size: 20),
-                      onPressed: () => db.deleteKhoyaDelivery(k.id),
-                    ),
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: FutureBuilder<_KhoyaTabData>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snap.hasError) {
+            return _DailyErrorView(error: snap.error.toString(), onRetry: _refresh);
+          }
+          final entries = snap.data?.entries ?? [];
+          final milkmenMap = snap.data?.milkmenMap ?? {};
+          if (entries.isEmpty) {
+            return ListView(children: [
+              const SizedBox(height: 120),
+              Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(Icons.inventory_2_outlined, size: 56, color: Colors.grey[300]),
+                const SizedBox(height: 12),
+                Text('No khoya entries', style: TextStyle(color: Colors.grey[500])),
+              ]),
+            ]);
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
+            itemCount: entries.length,
+            itemBuilder: (context, i) {
+              final k = entries[i];
+              final name = milkmenMap[k.milkmanId]?.name ?? '?';
+              return Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: Colors.orange.withOpacity(0.12),
+                    child: Text(name[0],
+                        style: const TextStyle(
+                            color: Colors.orange, fontWeight: FontWeight.bold)),
                   ),
-                );
-              },
-            );
-          },
-        );
-      },
+                  title: Text(name,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text('${k.weight.toStringAsFixed(2)} kg'),
+                  trailing: IconButton(
+                    icon: Icon(Icons.delete_outline,
+                        color: Colors.red[300], size: 20),
+                    onPressed: () => _delete(k),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
     );
   }
 }
@@ -454,7 +617,7 @@ class _AddMilkSheetState extends State<_AddMilkSheet> {
           canWeight: double.parse(_canCtrl.text),
           notes: _notesCtrl.text,
         );
-    if (mounted) Navigator.pop(context);
+    if (mounted) Navigator.pop(context, true);
   }
 }
 
@@ -565,6 +728,6 @@ class _AddKhoyaSheetState extends State<_AddKhoyaSheet> {
       weight: double.parse(_weightCtrl.text),
       notes: _notesCtrl.text,
     ));
-    if (mounted) Navigator.pop(context);
+    if (mounted) Navigator.pop(context, true);
   }
 }

@@ -6,13 +6,33 @@ import '../../database/models.dart';
 import '../../providers/app_provider.dart';
 import '../../theme/app_theme.dart';
 
-class MilkmenScreen extends StatelessWidget {
+class MilkmenScreen extends StatefulWidget {
   const MilkmenScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final db = context.watch<AppProvider>().db;
+  State<MilkmenScreen> createState() => _MilkmenScreenState();
+}
 
+class _MilkmenScreenState extends State<MilkmenScreen> {
+  late Future<List<Milkman>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<List<Milkman>> _load() =>
+      context.read<AppProvider>().db.getActiveMilkmen();
+
+  Future<void> _refresh() async {
+    final f = _load();
+    setState(() => _future = f);
+    await f.catchError((_) => <Milkman>[]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Milkmen')),
       floatingActionButton: FloatingActionButton.extended(
@@ -20,69 +40,58 @@ class MilkmenScreen extends StatelessWidget {
         icon: const Icon(Icons.add),
         label: const Text('Add Milkman'),
       ),
-      body: StreamBuilder<List<Milkman>>(
-        stream: db.watchActiveMilkmen(),
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  const Icon(Icons.error_outline, color: Colors.red, size: 48),
-                  const SizedBox(height: 12),
-                  const Text('Firestore Error:', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Text('${snap.error}',
-                      style: const TextStyle(color: Colors.red, fontSize: 12),
-                      textAlign: TextAlign.center),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Fix: Firebase Console → Firestore → Rules\nSet: allow read, write: if true;',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                ]),
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: FutureBuilder<List<Milkman>>(
+          future: _future,
+          builder: (context, snap) {
+            if (snap.hasError) {
+              return _ErrorView(error: snap.error.toString(), onRetry: _refresh);
+            }
+            if (snap.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final list = snap.data ?? [];
+            if (list.isEmpty) {
+              return ListView(
+                children: [
+                  const SizedBox(height: 120),
+                  Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
+                    const SizedBox(height: 16),
+                    Text('No milkmen added yet',
+                        style: TextStyle(color: Colors.grey[500])),
+                    const SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      onPressed: () => _showDialog(context),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add First Milkman'),
+                    ),
+                  ]),
+                ],
+              );
+            }
+            return ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
+              itemCount: list.length,
+              itemBuilder: (context, i) => _MilkmanCard(
+                milkman: list[i],
+                onEdit: () => _showDialog(context, existing: list[i]),
+                onDelete: () => _confirmDelete(context, list[i]),
               ),
             );
-          }
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final list = snap.data ?? [];
-          if (list.isEmpty) {
-            return Center(
-              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(Icons.people_outline, size: 64, color: Colors.grey[300]),
-                const SizedBox(height: 16),
-                Text('No milkmen added yet', style: TextStyle(color: Colors.grey[500])),
-                const SizedBox(height: 12),
-                ElevatedButton.icon(
-                  onPressed: () => _showDialog(context),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add First Milkman'),
-                ),
-              ]),
-            );
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
-            itemCount: list.length,
-            itemBuilder: (context, i) => _MilkmanCard(
-              milkman: list[i],
-              onEdit: () => _showDialog(context, existing: list[i]),
-              onDelete: () => _confirmDelete(context, list[i]),
-            ),
-          );
-        },
+          },
+        ),
       ),
     );
   }
 
-  void _showDialog(BuildContext context, {Milkman? existing}) {
-    showDialog(
+  Future<void> _showDialog(BuildContext context, {Milkman? existing}) async {
+    final changed = await showDialog<bool>(
       context: context,
       builder: (_) => _MilkmanDialog(existing: existing),
     );
+    if (changed == true) _refresh();
   }
 
   void _confirmDelete(BuildContext context, Milkman m) {
@@ -98,11 +107,47 @@ class MilkmenScreen extends StatelessWidget {
             onPressed: () async {
               await context.read<AppProvider>().db.deactivateMilkman(m.id);
               if (ctx.mounted) Navigator.pop(ctx);
+              _refresh();
             },
             child: const Text('Remove'),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Shared error view for the refresh-based screens.
+class _ErrorView extends StatelessWidget {
+  final String error;
+  final Future<void> Function() onRetry;
+  const _ErrorView({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      children: [
+        const SizedBox(height: 80),
+        Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.cloud_off, color: Colors.red, size: 48),
+            const SizedBox(height: 12),
+            const Text('Could not reach the server',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(error,
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
+          ]),
+        ),
+      ],
     );
   }
 }
@@ -272,6 +317,6 @@ class _MilkmanDialogState extends State<_MilkmanDialog> {
       await db.addMilkman(milkman);
     }
 
-    if (mounted) Navigator.pop(context);
+    if (mounted) Navigator.pop(context, true);
   }
 }

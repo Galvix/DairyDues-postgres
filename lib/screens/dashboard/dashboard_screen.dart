@@ -7,15 +7,51 @@ import '../../providers/app_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/payment_calculator.dart';
 
-class DashboardScreen extends StatelessWidget {
+class _DashboardData {
+  final List<MilkDelivery> todayDeliveries;
+  final List<PaneerEntry> recentPaneer;
+  _DashboardData(this.todayDeliveries, this.recentPaneer);
+}
+
+class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final provider = context.watch<AppProvider>();
-    final db = provider.db;
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  late Future<_DashboardData> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<_DashboardData> _load() async {
+    final db = context.read<AppProvider>().db;
     final today = DateTime.now();
     final todayStart = DateTime(today.year, today.month, today.day);
+    final results = await Future.wait([
+      db.getDeliveriesForDate(todayStart),
+      db.getRecentPaneerEntries(limit: 1),
+    ]);
+    return _DashboardData(
+      results[0] as List<MilkDelivery>,
+      results[1] as List<PaneerEntry>,
+    );
+  }
+
+  Future<void> _refresh() async {
+    final f = _load();
+    setState(() => _future = f);
+    await f.catchError((_) => _DashboardData([], []));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final today = DateTime.now();
 
     return Scaffold(
       appBar: AppBar(
@@ -28,149 +64,160 @@ class DashboardScreen extends StatelessWidget {
                 style: const TextStyle(fontSize: 11, color: Colors.white70)),
           ],
         ),
+        actions: [
+          IconButton(
+              onPressed: _refresh,
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh'),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Today's milk
-            StreamBuilder<List<MilkDelivery>>(
-              stream: db.watchDeliveriesForDate(todayStart),
-              builder: (context, snap) {
-                final deliveries = snap.data ?? [];
-                final totalMilk =
-                    deliveries.fold<double>(0.0, (s, d) => s + d.netMilk);
-                final totalBillable =
-                    deliveries.fold<double>(0.0, (s, d) => s + d.billableMilk);
-                final hasAdjustment = deliveries.any((d) => d.paneerAdjusted);
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SectionHeader(title: "TODAY'S MILK"),
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: FutureBuilder<_DashboardData>(
+          future: _future,
+          builder: (context, snap) {
+            final deliveries = snap.data?.todayDeliveries ?? [];
+            final recentPaneer = snap.data?.recentPaneer ?? [];
+            final loading = snap.connectionState == ConnectionState.waiting;
+
+            final totalMilk =
+                deliveries.fold<double>(0.0, (s, d) => s + d.netMilk);
+            final totalBillable =
+                deliveries.fold<double>(0.0, (s, d) => s + d.billableMilk);
+            final hasAdjustment = deliveries.any((d) => d.paneerAdjusted);
+
+            final todayStart2 =
+                DateTime(today.year, today.month, today.day);
+            final todayEntry = recentPaneer.isNotEmpty &&
+                    recentPaneer.first.entryDate.isAfter(todayStart2)
+                ? recentPaneer.first
+                : null;
+
+            return SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (snap.hasError)
+                    Card(
+                      color: Colors.red.withOpacity(0.06),
+                      child: ListTile(
+                        leading: const Icon(Icons.cloud_off, color: Colors.red),
+                        title: const Text('Could not reach the server'),
+                        subtitle: Text('${snap.error}',
+                            style: const TextStyle(fontSize: 12)),
+                        trailing: IconButton(
+                            onPressed: _refresh,
+                            icon: const Icon(Icons.refresh)),
+                      ),
+                    ),
+                  if (loading)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8, bottom: 8),
+                      child: LinearProgressIndicator(minHeight: 2),
+                    ),
+
+                  // Today's milk
+                  const SectionHeader(title: "TODAY'S MILK"),
+                  Row(children: [
+                    Expanded(
+                      child: StatCard(
+                        label: 'Total Milk',
+                        value: DateHelpers.formatWeight(totalMilk),
+                        icon: Icons.local_drink,
+                        color: AppTheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: StatCard(
+                        label: hasAdjustment ? 'Billable (Adjusted)' : 'Billable',
+                        value: DateHelpers.formatWeight(totalBillable),
+                        icon: Icons.check_circle_outline,
+                        color: hasAdjustment ? AppTheme.warning : AppTheme.success,
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 8),
+                  StatCard(
+                    label: 'Entries Today',
+                    value:
+                        '${deliveries.length} from ${deliveries.map((d) => d.milkmanId).toSet().length} milkmen',
+                    icon: Icons.local_shipping_outlined,
+                  ),
+
+                  // Today's paneer
+                  const SectionHeader(title: "TODAY'S PANEER"),
+                  if (todayEntry == null)
+                    const Card(
+                      child: ListTile(
+                        leading:
+                            Icon(Icons.scale_outlined, color: Colors.orange),
+                        title: Text('Paneer not entered yet'),
+                        subtitle:
+                            Text('Go to Paneer tab to record today\'s yield'),
+                      ),
+                    )
+                  else ...[
                     Row(children: [
                       Expanded(
                         child: StatCard(
-                          label: 'Total Milk',
-                          value: DateHelpers.formatWeight(totalMilk),
-                          icon: Icons.local_drink,
-                          color: AppTheme.primary,
+                          label: 'Expected',
+                          value: DateHelpers.formatWeight(
+                              todayEntry.expectedPaneer),
+                          icon: Icons.scale,
+                          color: Colors.blue,
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: StatCard(
-                          label: hasAdjustment
-                              ? 'Billable (Adjusted)'
-                              : 'Billable',
-                          value: DateHelpers.formatWeight(totalBillable),
-                          icon: Icons.check_circle_outline,
-                          color: hasAdjustment
+                          label: 'Actual',
+                          value: DateHelpers.formatWeight(
+                              todayEntry.actualPaneer),
+                          icon: todayEntry.adjustmentApplied
+                              ? Icons.warning_amber
+                              : Icons.check_circle,
+                          color: todayEntry.adjustmentApplied
                               ? AppTheme.warning
                               : AppTheme.success,
                         ),
                       ),
                     ]),
-                    const SizedBox(height: 8),
-                    StatCard(
-                      label: 'Entries Today',
-                      value:
-                          '${deliveries.length} from ${deliveries.map((d) => d.milkmanId).toSet().length} milkmen',
-                      icon: Icons.local_shipping_outlined,
-                    ),
-                  ],
-                );
-              },
-            ),
-
-            // Today's paneer
-            StreamBuilder<List<PaneerEntry>>(
-              stream: db.watchRecentPaneerEntries(limit: 1),
-              builder: (context, snap) {
-                final entries = snap.data ?? [];
-                final todayStart2 =
-                    DateTime(today.year, today.month, today.day);
-                final todayEntry = entries.isNotEmpty &&
-                        entries.first.entryDate.isAfter(todayStart2)
-                    ? entries.first
-                    : null;
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SectionHeader(title: "TODAY'S PANEER"),
-                    if (todayEntry == null)
-                      Card(
-                        child: ListTile(
-                          leading: const Icon(Icons.scale_outlined,
-                              color: Colors.orange),
-                          title: const Text('Paneer not entered yet'),
-                          subtitle: const Text(
-                              'Go to Paneer tab to record today\'s yield'),
+                    if (todayEntry.adjustmentApplied)
+                      Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.warning.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: AppTheme.warning.withOpacity(0.4)),
                         ),
-                      )
-                    else ...[
-                      Row(children: [
-                        Expanded(
-                          child: StatCard(
-                            label: 'Expected',
-                            value: DateHelpers.formatWeight(
-                                todayEntry.expectedPaneer),
-                            icon: Icons.scale,
-                            color: Colors.blue,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: StatCard(
-                            label: 'Actual',
-                            value: DateHelpers.formatWeight(
-                                todayEntry.actualPaneer),
-                            icon: todayEntry.adjustmentApplied
-                                ? Icons.warning_amber
-                                : Icons.check_circle,
-                            color: todayEntry.adjustmentApplied
-                                ? AppTheme.warning
-                                : AppTheme.success,
-                          ),
-                        ),
-                      ]),
-                      if (todayEntry.adjustmentApplied)
-                        Container(
-                          margin: const EdgeInsets.only(top: 8),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: AppTheme.warning.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                                color: AppTheme.warning.withOpacity(0.4)),
-                          ),
-                          child: Row(children: [
-                            Icon(Icons.info_outline,
-                                color: AppTheme.warning, size: 16),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Milk adjusted to ${DateHelpers.formatWeight(todayEntry.adjustedMilkTotal ?? 0)} (from ${DateHelpers.formatWeight(todayEntry.totalMilkUsed)})',
-                                style: TextStyle(
-                                    color: AppTheme.warning, fontSize: 13),
-                              ),
+                        child: Row(children: [
+                          Icon(Icons.info_outline,
+                              color: AppTheme.warning, size: 16),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Milk adjusted to ${DateHelpers.formatWeight(todayEntry.adjustedMilkTotal ?? 0)} (from ${DateHelpers.formatWeight(todayEntry.totalMilkUsed)})',
+                              style: TextStyle(
+                                  color: AppTheme.warning, fontSize: 13),
                             ),
-                          ]),
-                        ),
-                    ],
+                          ),
+                        ]),
+                      ),
                   ],
-                );
-              },
-            ),
 
-            // This week
-            const SectionHeader(title: 'THIS WEEK'),
-            // FIX: Use a StatefulWidget that loads data once instead of
-            // FutureBuilder which creates new futures on every rebuild
-            _WeekSummaryCard(weekStart: DateHelpers.getWeekStart(today)),
-            const SizedBox(height: 40),
-          ],
+                  // This week
+                  const SectionHeader(title: 'THIS WEEK'),
+                  _WeekSummaryCard(weekStart: DateHelpers.getWeekStart(today)),
+                  const SizedBox(height: 40),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
