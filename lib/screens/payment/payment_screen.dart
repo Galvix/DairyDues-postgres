@@ -1,4 +1,5 @@
 // lib/screens/payment/payment_screen.dart
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:path_provider/path_provider.dart';
+import '../../database/api_service.dart';
 import '../../database/models.dart';
 import '../../providers/app_provider.dart';
 import '../../theme/app_theme.dart';
@@ -73,8 +75,14 @@ class _PaymentScreenState extends State<PaymentScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.picture_as_pdf_outlined),
-            tooltip: 'Generate Full Payslip',
+            tooltip: 'Full Payslip — Print / Preview here',
             onPressed: _summaries.isEmpty || _loading ? null : _exportAllPdf,
+          ),
+          IconButton(
+            icon: const Icon(Icons.print_outlined),
+            tooltip: 'Full Payslip — Send to home printer',
+            onPressed:
+                _summaries.isEmpty || _loading ? null : _sendFullToHomePrinter,
           ),
           IconButton(
             icon: const Icon(Icons.table_chart_outlined),
@@ -191,6 +199,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
         weekStart: _weekStart,
         onMarkPaid: () => _markPaid(i),
         onPrint: () => _printSlip(_summaries[i]),
+        onSendToPrinter: () => _sendSlipToHomePrinter(_summaries[i]),
       ),
     );
   }
@@ -220,6 +229,59 @@ class _PaymentScreenState extends State<PaymentScreen> {
   Future<void> _printSlip(WeeklyPaymentSummary s) async {
     final bytes = await _buildSimpleSlip(s);
     await Printing.layoutPdf(onLayout: (_) => bytes);
+  }
+
+  // ─── Home-printer enqueue (server renders the PDF; agent prints it) ───────
+  // Distinct from the local print/preview above. The A4 redesign happens
+  // server-side, so we only send job_type + params here.
+
+  String _isoDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  Future<void> _sendSlipToHomePrinter(WeeklyPaymentSummary s) async {
+    final db = context.read<AppProvider>().db;
+    try {
+      final job = await db.enqueuePrintJob('weekly_slip', {
+        'milkman_id': s.milkmanId,
+        'week_start': _isoDate(_weekStart),
+      });
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => _PrintJobStatusDialog(db: db, jobId: job.id),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Print queue error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _sendFullToHomePrinter() async {
+    final db = context.read<AppProvider>().db;
+    try {
+      final job = await db.enqueuePrintJob('full_payslip', {
+        'week_start': _isoDate(_weekStart),
+        'week_end': _isoDate(DateHelpers.getWeekEnd(_weekStart)),
+      });
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => _PrintJobStatusDialog(db: db, jobId: job.id),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Print queue error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   Future<Uint8List> _buildSimpleSlip(WeeklyPaymentSummary s) async {
@@ -965,12 +1027,14 @@ class _PayCard extends StatelessWidget {
   final DateTime weekStart;
   final VoidCallback onMarkPaid;
   final VoidCallback onPrint;
+  final VoidCallback onSendToPrinter;
 
   const _PayCard({
     required this.summary,
     required this.weekStart,
     required this.onMarkPaid,
     required this.onPrint,
+    required this.onSendToPrinter,
   });
 
   @override
@@ -997,8 +1061,13 @@ class _PayCard extends StatelessWidget {
             IconButton(
               icon: const Icon(Icons.picture_as_pdf_outlined,
                   color: AppTheme.primary),
-              tooltip: 'Print slip',
+              tooltip: 'Print / preview slip here',
               onPressed: onPrint,
+            ),
+            IconButton(
+              icon: const Icon(Icons.print_outlined, color: AppTheme.primary),
+              tooltip: 'Send slip to home printer',
+              onPressed: onSendToPrinter,
             ),
           ]),
           const Divider(height: 20),
@@ -1119,6 +1188,107 @@ class _DeductRow extends StatelessWidget {
             style: TextStyle(
                 color: Colors.red[500], fontSize: 13)),
       ]),
+    );
+  }
+}
+
+/// Polls a print job's status (pending -> printing -> done/failed) after it has
+/// been enqueued for the home printer. This is the ONLY place the migrated app
+/// polls — REST has no push, and here the user is waiting on a physical print.
+class _PrintJobStatusDialog extends StatefulWidget {
+  final ApiService db;
+  final String jobId;
+  const _PrintJobStatusDialog({required this.db, required this.jobId});
+
+  @override
+  State<_PrintJobStatusDialog> createState() => _PrintJobStatusDialogState();
+}
+
+class _PrintJobStatusDialogState extends State<_PrintJobStatusDialog> {
+  Timer? _timer;
+  String _status = 'pending';
+  String? _error;
+  bool _done = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Poll every 2s, give up after ~60s (REST polling, kept tightly scoped).
+    _timer = Timer.periodic(const Duration(seconds: 2), (t) async {
+      if (t.tick > 30) {
+        t.cancel();
+        if (mounted) setState(() => _error = 'Timed out waiting for the printer.');
+        return;
+      }
+      try {
+        final job = await widget.db.getPrintJob(widget.jobId);
+        if (!mounted) return;
+        if (job == null) return;
+        setState(() {
+          _status = job.status;
+          _error = job.error;
+        });
+        if (job.status == 'done' || job.status == 'failed') {
+          t.cancel();
+          setState(() => _done = true);
+        }
+      } catch (_) {
+        // transient — keep polling until the timeout.
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = _status == 'failed' || _error != null;
+    final done = _status == 'done';
+    return AlertDialog(
+      title: Row(children: [
+        Icon(
+          failed
+              ? Icons.error_outline
+              : done
+                  ? Icons.check_circle_outline
+                  : Icons.print_outlined,
+          color: failed
+              ? AppTheme.error
+              : done
+                  ? AppTheme.success
+                  : AppTheme.primary,
+        ),
+        const SizedBox(width: 8),
+        const Text('Home printer'),
+      ]),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        if (!_done && _error == null)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 12),
+            child: LinearProgressIndicator(),
+          ),
+        Text(
+          failed
+              ? 'Print failed: ${_error ?? 'unknown error'}'
+              : done
+                  ? 'Sent to the printer ✓'
+                  : 'Status: $_status…',
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 8),
+        Text('Job #${widget.jobId.substring(0, 8)}',
+            style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+      ]),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(_done || _error != null ? 'Close' : 'Dismiss'),
+        ),
+      ],
     );
   }
 }
