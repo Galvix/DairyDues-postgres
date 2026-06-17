@@ -1,12 +1,31 @@
 // lib/database/models.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
+//
+// Plain JSON (de)serialization for the FastAPI + PostgreSQL backend.
+// - Postgres PKs are uuid -> represented as Dart String (model `id` stays String).
+// - timestamptz / date fields are ISO-8601 strings, parsed to local DateTime.
+// - JSON keys are snake_case to match the backend Pydantic models.
 
-/// Safe DateTime extraction — handles both Timestamp and DateTime
-DateTime _toDateTime(dynamic value) {
-  if (value is Timestamp) return value.toDate();
+/// Parse an ISO-8601 timestamptz/date string into a local DateTime.
+/// Backend sends timestamptz with offset (…Z) and `date` as "YYYY-MM-DD".
+DateTime _parseDate(dynamic value) {
+  if (value == null) return DateTime.now();
   if (value is DateTime) return value;
-  return DateTime.now();
+  return DateTime.parse(value as String).toLocal();
 }
+
+/// Numeric fields arrive as JSON numbers (Pydantic floats). Be tolerant of ints.
+double _toDouble(dynamic value) =>
+    value == null ? 0.0 : (value as num).toDouble();
+
+/// timestamptz payload: send UTC with offset so Postgres stores an unambiguous
+/// instant. Round-trips back to the same local wall-clock via _parseDate().
+String _isoTimestamp(DateTime d) => d.toUtc().toIso8601String();
+
+/// `date` payload (calendar date, no time/zone): "YYYY-MM-DD" in local terms.
+String _isoDate(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-'
+    '${d.month.toString().padLeft(2, '0')}-'
+    '${d.day.toString().padLeft(2, '0')}';
 
 class Milkman {
   final String id;
@@ -25,21 +44,22 @@ class Milkman {
     this.isActive = true,
   });
 
-  factory Milkman.fromFirestore(String id, Map<String, dynamic> d) => Milkman(
-        id: id,
+  factory Milkman.fromJson(Map<String, dynamic> d) => Milkman(
+        id: d['id'] as String,
         name: d['name'] ?? '',
-        milkRate: (d['milkRate'] ?? 0).toDouble(),
-        khoyaRate: (d['khoyaRate'] ?? 0).toDouble(),
-        suppliesKhoya: d['suppliesKhoya'] ?? false,
-        isActive: d['isActive'] ?? true,
+        milkRate: _toDouble(d['milk_rate']),
+        khoyaRate: _toDouble(d['khoya_rate']),
+        suppliesKhoya: d['supplies_khoya'] ?? false,
+        isActive: d['is_active'] ?? true,
       );
 
-  Map<String, dynamic> toMap() => {
+  /// Body for POST /milkmen/ and PATCH /milkmen/{id}.
+  Map<String, dynamic> toJson() => {
         'name': name,
-        'milkRate': milkRate,
-        'khoyaRate': khoyaRate,
-        'suppliesKhoya': suppliesKhoya,
-        'isActive': isActive,
+        'milk_rate': milkRate,
+        'khoya_rate': khoyaRate,
+        'supplies_khoya': suppliesKhoya,
+        'is_active': isActive,
       };
 
   Milkman copyWith({
@@ -82,27 +102,25 @@ class MilkDelivery {
     this.notes = '',
   });
 
-  factory MilkDelivery.fromFirestore(String id, Map<String, dynamic> d) =>
-      MilkDelivery(
-        id: id,
-        milkmanId: d['milkmanId'] ?? '',
-        deliveryDate: _toDateTime(d['deliveryDate']),
-        grossWeight: (d['grossWeight'] ?? 0).toDouble(),
-        canWeight: (d['canWeight'] ?? 0).toDouble(),
-        netMilk: (d['netMilk'] ?? 0).toDouble(),
-        billableMilk: (d['billableMilk'] ?? 0).toDouble(),
-        paneerAdjusted: d['paneerAdjusted'] ?? false,
+  factory MilkDelivery.fromJson(Map<String, dynamic> d) => MilkDelivery(
+        id: d['id'] as String,
+        milkmanId: d['milkman_id'] ?? '',
+        deliveryDate: _parseDate(d['delivery_date']),
+        grossWeight: _toDouble(d['gross_weight']),
+        canWeight: _toDouble(d['can_weight']),
+        netMilk: _toDouble(d['net_milk']),
+        billableMilk: _toDouble(d['billable_milk']),
+        paneerAdjusted: d['paneer_adjusted'] ?? false,
         notes: d['notes'] ?? '',
       );
 
-  Map<String, dynamic> toMap() => {
-        'milkmanId': milkmanId,
-        'deliveryDate': Timestamp.fromDate(deliveryDate),
-        'grossWeight': grossWeight,
-        'canWeight': canWeight,
-        'netMilk': netMilk,
-        'billableMilk': billableMilk,
-        'paneerAdjusted': paneerAdjusted,
+  /// Body for POST /milkmen/{milkman_id}/deliveries.
+  /// milkman_id is a path param; billable_milk is set server-side (= net_milk).
+  Map<String, dynamic> toCreateJson() => {
+        'delivery_date': _isoTimestamp(deliveryDate),
+        'gross_weight': grossWeight,
+        'can_weight': canWeight,
+        'net_milk': netMilk,
         'notes': notes,
       };
 }
@@ -122,18 +140,17 @@ class KhoyaDelivery {
     this.notes = '',
   });
 
-  factory KhoyaDelivery.fromFirestore(String id, Map<String, dynamic> d) =>
-      KhoyaDelivery(
-        id: id,
-        milkmanId: d['milkmanId'] ?? '',
-        deliveryDate: _toDateTime(d['deliveryDate']),
-        weight: (d['weight'] ?? 0).toDouble(),
+  factory KhoyaDelivery.fromJson(Map<String, dynamic> d) => KhoyaDelivery(
+        id: d['id'] as String,
+        milkmanId: d['milkman_id'] ?? '',
+        deliveryDate: _parseDate(d['delivery_date']),
+        weight: _toDouble(d['weight']),
         notes: d['notes'] ?? '',
       );
 
-  Map<String, dynamic> toMap() => {
-        'milkmanId': milkmanId,
-        'deliveryDate': Timestamp.fromDate(deliveryDate),
+  /// Body for POST /milkmen/{milkman_id}/khoya (milkman_id is a path param).
+  Map<String, dynamic> toCreateJson() => {
+        'delivery_date': _isoTimestamp(deliveryDate),
         'weight': weight,
         'notes': notes,
       };
@@ -141,7 +158,8 @@ class KhoyaDelivery {
 
 class PaneerEntry {
   final String id;
-  final String? milkmanId;  // null for old daily-level entries
+  final String? milkmanId;
+  final String? deliveryId; // the specific milk_deliveries row tested
   final DateTime entryDate;
   final double totalMilkUsed;
   final double expectedPaneer;
@@ -154,6 +172,7 @@ class PaneerEntry {
   PaneerEntry({
     required this.id,
     this.milkmanId,
+    this.deliveryId,
     required this.entryDate,
     required this.totalMilkUsed,
     required this.expectedPaneer,
@@ -164,30 +183,34 @@ class PaneerEntry {
     this.adjustedMilkTotal,
   });
 
-  factory PaneerEntry.fromFirestore(String id, Map<String, dynamic> d) =>
-      PaneerEntry(
-        id: id,
-        milkmanId: d['milkmanId'] as String?,
-        entryDate: _toDateTime(d['entryDate']),
-        totalMilkUsed: (d['totalMilkUsed'] ?? 0).toDouble(),
-        expectedPaneer: (d['expectedPaneer'] ?? 0).toDouble(),
-        actualPaneer: (d['actualPaneer'] ?? 0).toDouble(),
-        yieldRatio: (d['yieldRatio'] ?? 1.0).toDouble(),
-        toleranceKg: (d['toleranceKg'] ?? 0).toDouble(),
-        adjustmentApplied: d['adjustmentApplied'] ?? false,
-        adjustedMilkTotal: d['adjustedMilkTotal']?.toDouble(),
+  factory PaneerEntry.fromJson(Map<String, dynamic> d) => PaneerEntry(
+        id: d['id'] as String,
+        milkmanId: d['milkman_id'] as String?,
+        deliveryId: d['delivery_id'] as String?,
+        entryDate: _parseDate(d['entry_date']),
+        totalMilkUsed: _toDouble(d['total_milk_used']),
+        expectedPaneer: _toDouble(d['expected_paneer']),
+        actualPaneer: _toDouble(d['actual_paneer']),
+        yieldRatio: d['yield_ratio'] == null ? 1.0 : _toDouble(d['yield_ratio']),
+        toleranceKg: _toDouble(d['tolerance_kg']),
+        adjustmentApplied: d['adjustment_applied'] ?? false,
+        adjustedMilkTotal: d['adjusted_milk_total'] == null
+            ? null
+            : _toDouble(d['adjusted_milk_total']),
       );
 
-  Map<String, dynamic> toMap() => {
-        if (milkmanId != null) 'milkmanId': milkmanId,
-        'entryDate': Timestamp.fromDate(entryDate),
-        'totalMilkUsed': totalMilkUsed,
-        'expectedPaneer': expectedPaneer,
-        'actualPaneer': actualPaneer,
-        'yieldRatio': yieldRatio,
-        'toleranceKg': toleranceKg,
-        'adjustmentApplied': adjustmentApplied,
-        'adjustedMilkTotal': adjustedMilkTotal,
+  /// Body for POST /milkmen/{milkman_id}/paneer. The backend computes
+  /// yield_ratio, adjusted_milk_total and adjustment_applied itself, so they
+  /// are not sent. Both milkman_id and delivery_id are required by the
+  /// PaneerEntryCreate model. entry_date is a calendar `date`.
+  Map<String, dynamic> toCreateJson() => {
+        'milkman_id': milkmanId,
+        'delivery_id': deliveryId,
+        'entry_date': _isoDate(entryDate),
+        'total_milk_used': totalMilkUsed,
+        'expected_paneer': expectedPaneer,
+        'actual_paneer': actualPaneer,
+        'tolerance_kg': toleranceKg,
       };
 }
 
@@ -206,18 +229,18 @@ class Loan {
     this.notes = '',
   });
 
-  factory Loan.fromFirestore(String id, Map<String, dynamic> d) => Loan(
-        id: id,
-        milkmanId: d['milkmanId'] ?? '',
-        loanDate: _toDateTime(d['loanDate']),
-        amount: (d['amount'] ?? 0).toDouble(),
+  factory Loan.fromJson(Map<String, dynamic> d) => Loan(
+        id: d['id'] as String,
+        milkmanId: d['milkman_id'] ?? '',
+        loanDate: _parseDate(d['loan_date']),
+        amount: _toDouble(d['amount']),
         notes: d['notes'] ?? '',
       );
 
-  Map<String, dynamic> toMap() => {
-        'milkmanId': milkmanId,
-        'loanDate': Timestamp.fromDate(loanDate),
+  /// Body for POST /milkmen/{milkman_id}/loans (milkman_id is a path param).
+  Map<String, dynamic> toCreateJson() => {
         'amount': amount,
+        'loan_date': _isoTimestamp(loanDate),
         'notes': notes,
       };
 }
@@ -238,6 +261,9 @@ class WeeklyPayment {
   final double loanCarryForward;
   final bool isPaid;
   final DateTime? paidAt;
+  // Snapshotted rates at settlement time (new vs the old Firestore model).
+  final double milkRateApplied;
+  final double khoyaRateApplied;
 
   WeeklyPayment({
     required this.id,
@@ -255,41 +281,82 @@ class WeeklyPayment {
     required this.loanCarryForward,
     this.isPaid = false,
     this.paidAt,
+    this.milkRateApplied = 0.0,
+    this.khoyaRateApplied = 0.0,
   });
 
-  factory WeeklyPayment.fromFirestore(String id, Map<String, dynamic> d) =>
-      WeeklyPayment(
-        id: id,
-        milkmanId: d['milkmanId'] ?? '',
-        weekStartDate: _toDateTime(d['weekStartDate']),
-        weekEndDate: _toDateTime(d['weekEndDate']),
-        totalMilkKg: (d['totalMilkKg'] ?? 0).toDouble(),
-        milkEarnings: (d['milkEarnings'] ?? 0).toDouble(),
-        totalKhoyaKg: (d['totalKhoyaKg'] ?? 0).toDouble(),
-        khoyaEarnings: (d['khoyaEarnings'] ?? 0).toDouble(),
-        totalEarnings: (d['totalEarnings'] ?? 0).toDouble(),
-        loanDeducted: (d['loanDeducted'] ?? 0).toDouble(),
-        carriedOverLoan: (d['carriedOverLoan'] ?? 0).toDouble(),
-        netPayable: (d['netPayable'] ?? 0).toDouble(),
-        loanCarryForward: (d['loanCarryForward'] ?? 0).toDouble(),
-        isPaid: d['isPaid'] ?? false,
-        paidAt: d['paidAt'] != null ? _toDateTime(d['paidAt']) : null,
+  factory WeeklyPayment.fromJson(Map<String, dynamic> d) => WeeklyPayment(
+        id: d['id'] as String,
+        milkmanId: d['milkman_id'] ?? '',
+        weekStartDate: _parseDate(d['week_start_date']),
+        weekEndDate: _parseDate(d['week_end_date']),
+        totalMilkKg: _toDouble(d['total_milk_kg']),
+        milkEarnings: _toDouble(d['milk_earnings']),
+        totalKhoyaKg: _toDouble(d['total_khoya_kg']),
+        khoyaEarnings: _toDouble(d['khoya_earnings']),
+        totalEarnings: _toDouble(d['total_earnings']),
+        loanDeducted: _toDouble(d['loan_deducted']),
+        carriedOverLoan: _toDouble(d['carried_over_loan']),
+        netPayable: _toDouble(d['net_payable']),
+        loanCarryForward: _toDouble(d['loan_carry_forward']),
+        isPaid: d['is_paid'] ?? false,
+        paidAt: d['paid_at'] == null ? null : _parseDate(d['paid_at']),
+        milkRateApplied: _toDouble(d['milk_rate_applied']),
+        khoyaRateApplied: _toDouble(d['khoya_rate_applied']),
       );
 
-  Map<String, dynamic> toMap() => {
-        'milkmanId': milkmanId,
-        'weekStartDate': Timestamp.fromDate(weekStartDate),
-        'weekEndDate': Timestamp.fromDate(weekEndDate),
-        'totalMilkKg': totalMilkKg,
-        'milkEarnings': milkEarnings,
-        'totalKhoyaKg': totalKhoyaKg,
-        'khoyaEarnings': khoyaEarnings,
-        'totalEarnings': totalEarnings,
-        'loanDeducted': loanDeducted,
-        'carriedOverLoan': carriedOverLoan,
-        'netPayable': netPayable,
-        'loanCarryForward': loanCarryForward,
-        'isPaid': isPaid,
-        'paidAt': paidAt != null ? Timestamp.fromDate(paidAt!) : null,
+  /// Body for POST /milkmen/{milkman_id}/payments (upsert).
+  Map<String, dynamic> toCreateJson() => {
+        'week_start_date': _isoTimestamp(weekStartDate),
+        'week_end_date': _isoTimestamp(weekEndDate),
+        'total_milk_kg': totalMilkKg,
+        'milk_earnings': milkEarnings,
+        'total_khoya_kg': totalKhoyaKg,
+        'khoya_earnings': khoyaEarnings,
+        'total_earnings': totalEarnings,
+        'loan_deducted': loanDeducted,
+        'carried_over_loan': carriedOverLoan,
+        'net_payable': netPayable,
+        'loan_carry_forward': loanCarryForward,
+        'is_paid': isPaid,
+        'milk_rate_applied': milkRateApplied,
+        'khoya_rate_applied': khoyaRateApplied,
       };
+}
+
+/// A queued print job (POST /print-jobs/). Returned rows omit the `pdf` bytes.
+class PrintJob {
+  final String id;
+  final String jobType;
+  final Map<String, dynamic> params;
+  final String status; // pending | printing | done | failed
+  final int attempts;
+  final String? error;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? printedAt;
+
+  PrintJob({
+    required this.id,
+    required this.jobType,
+    required this.params,
+    required this.status,
+    required this.attempts,
+    this.error,
+    required this.createdAt,
+    required this.updatedAt,
+    this.printedAt,
+  });
+
+  factory PrintJob.fromJson(Map<String, dynamic> d) => PrintJob(
+        id: d['id'] as String,
+        jobType: d['job_type'] ?? '',
+        params: (d['params'] as Map?)?.cast<String, dynamic>() ?? {},
+        status: d['status'] ?? 'pending',
+        attempts: (d['attempts'] ?? 0) as int,
+        error: d['error'] as String?,
+        createdAt: _parseDate(d['created_at']),
+        updatedAt: _parseDate(d['updated_at']),
+        printedAt: d['printed_at'] == null ? null : _parseDate(d['printed_at']),
+      );
 }
