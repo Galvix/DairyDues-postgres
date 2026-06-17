@@ -112,7 +112,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: ListTile(
               leading: const Icon(Icons.water_drop, color: AppTheme.primary),
               title: const Text('Hisaab — Dairy Manager'),
-              subtitle: const Text('Version 2.0 • Firebase Edition'),
+              subtitle: const Text('Version 2.0 • Self-hosted Edition'),
             ),
           ),
         ],

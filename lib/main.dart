@@ -1,10 +1,9 @@
 // lib/main.dart
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 
-import 'firebase_options.dart';
-import 'database/firestore_service.dart';
+import 'database/api_service.dart';
 import 'providers/app_provider.dart';
 import 'theme/app_theme.dart';
 import 'screens/dashboard/dashboard_screen.dart';
@@ -17,11 +16,19 @@ import 'screens/settings/settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  final db = FirestoreService();
+  // Load API base URL + token from the gitignored .env (see .env.example).
+  await dotenv.load(fileName: '.env');
+
+  final db = ApiService();
   final provider = AppProvider(db);
-  await provider.loadSettings();
+  // Settings come from the backend; if it's unreachable at launch we still open
+  // the app with sensible defaults and each screen surfaces its own retry.
+  try {
+    await provider.loadSettings();
+  } catch (_) {
+    // ignored — defaults stand until the next successful settings load
+  }
 
   runApp(
     ChangeNotifierProvider.value(
