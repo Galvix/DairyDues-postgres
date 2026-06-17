@@ -29,6 +29,7 @@ class _LoansScreenState extends State<LoansScreen> {
       context.read<AppProvider>().db.getActiveMilkmen();
 
   Future<void> _refresh() async {
+    await context.read<AppProvider>().db.syncNow();
     final f = _load();
     setState(() {
       _future = f;

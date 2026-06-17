@@ -176,7 +176,7 @@ class _MilkTabState extends State<_MilkTab> {
   Future<void> _delete(MilkDelivery d) async {
     final db = context.read<AppProvider>().db;
     try {
-      await db.deleteMilkDelivery(d.id);
+      await db.deleteMilkDelivery(d.milkmanId, d.id);
       _refresh();
     } catch (e) {
       if (mounted) {
@@ -398,7 +398,7 @@ class _KhoyaTabState extends State<_KhoyaTab> {
   Future<void> _delete(KhoyaDelivery k) async {
     final db = context.read<AppProvider>().db;
     try {
-      await db.deleteKhoyaDelivery(k.id);
+      await db.deleteKhoyaDelivery(k.milkmanId, k.id);
       _refresh();
     } catch (e) {
       if (mounted) {

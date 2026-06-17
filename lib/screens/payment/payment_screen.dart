@@ -11,7 +11,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:path_provider/path_provider.dart';
-import '../../database/api_service.dart';
+import '../../database/repository.dart';
 import '../../providers/app_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/payment_calculator.dart';
@@ -50,6 +50,11 @@ class _PaymentScreenState extends State<PaymentScreen> {
     }
   }
 
+  Future<void> _syncAndLoad() async {
+    await context.read<AppProvider>().db.syncNow();
+    await _load();
+  }
+
   void _changeWeek(int direction) {
     setState(() {
       _weekStart = _weekStart.add(Duration(days: 7 * direction));
@@ -69,8 +74,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-            onPressed: _loading ? null : _load,
+            tooltip: 'Sync & refresh',
+            onPressed: _loading ? null : _syncAndLoad,
           ),
           IconButton(
             icon: const Icon(Icons.picture_as_pdf_outlined),
@@ -207,11 +212,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
     try {
       final db = context.read<AppProvider>().db;
       final s = _summaries[i];
-      final payment = await db.getPaymentForWeek(s.milkmanId, _weekStart);
-      if (payment != null) {
-        await db.markPaymentPaid(payment.id);
-        _load();
-      }
+      await db.markPaymentPaidForWeek(s.milkmanId, _weekStart);
+      _load();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1195,7 +1197,7 @@ class _DeductRow extends StatelessWidget {
 /// been enqueued for the home printer. This is the ONLY place the migrated app
 /// polls — REST has no push, and here the user is waiting on a physical print.
 class _PrintJobStatusDialog extends StatefulWidget {
-  final ApiService db;
+  final Repository db;
   final String jobId;
   const _PrintJobStatusDialog({required this.db, required this.jobId});
 

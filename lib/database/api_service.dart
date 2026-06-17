@@ -121,6 +121,15 @@ class ApiService {
   Future<double> getSampleMilkKg() => _getSetting('sample_milk_kg', 24.0);
   Future<double> getToleranceKg() => _getSetting('paneer_tolerance_kg', 0.5);
 
+  /// All settings as a map (used by the sync pull to seed the local cache).
+  Future<Map<String, double>> getAllSettings() => _run(() async {
+        final r = await _dio.get('/settings/');
+        return {
+          for (final s in _asList(r.data))
+            s['key'] as String: (s['value'] as num).toDouble(),
+        };
+      });
+
   Future<void> setSetting(String key, double value) => _run(() async {
         await _dio.put('/settings/$key', data: {'value': value});
       });
@@ -173,15 +182,9 @@ class ApiService {
         return MilkDelivery.fromJson(r.data).id;
       });
 
-  // BACKEND GAP: the API exposes no DELETE route for milk deliveries.
-  // TODO(backend): add DELETE /milkmen/{milkman_id}/deliveries/{id}.
-  Future<void> deleteMilkDelivery(String id) async {
-    throw ApiException(
-      'Deleting a milk entry is not supported yet — the backend has no '
-      'delete-delivery endpoint. (TODO: add one.)',
-      ApiErrorKind.server,
-    );
-  }
+  Future<void> deleteMilkDelivery(String milkmanId, String id) => _run(() async {
+        await _dio.delete('/milkmen/$milkmanId/deliveries/$id');
+      });
 
   /// All deliveries on [date], across every milkman. The backend only exposes
   /// per-milkman delivery lists, so this fans out. (See BACKEND GAPS in report.)
@@ -231,15 +234,9 @@ class ApiService {
         return KhoyaDelivery.fromJson(r.data).id;
       });
 
-  // BACKEND GAP: no DELETE route for khoya deliveries.
-  // TODO(backend): add DELETE /milkmen/{milkman_id}/khoya/{id}.
-  Future<void> deleteKhoyaDelivery(String id) async {
-    throw ApiException(
-      'Deleting a khoya entry is not supported yet — the backend has no '
-      'delete-khoya endpoint. (TODO: add one.)',
-      ApiErrorKind.server,
-    );
-  }
+  Future<void> deleteKhoyaDelivery(String milkmanId, String id) => _run(() async {
+        await _dio.delete('/milkmen/$milkmanId/khoya/$id');
+      });
 
   Future<List<KhoyaDelivery>> getKhoyaForDate(DateTime date) => _run(() async {
         final start = DateTime(date.year, date.month, date.day);
@@ -295,10 +292,11 @@ class ApiService {
     required double expectedPaneer,
     required double actualPaneer,
     double toleranceKg = 0,
+    String id = '',
   }) =>
       _run(() async {
         final body = PaneerEntry(
-          id: '',
+          id: id,
           milkmanId: milkmanId,
           deliveryId: deliveryId,
           entryDate: entryDate,
@@ -398,6 +396,13 @@ class ApiService {
 
   Future<void> markPaymentPaid(String id) => _run(() async {
         await _dio.patch('/payments/$id/mark-paid');
+      });
+
+  /// Mark a week paid by natural key (offline-first: no server payment id needed).
+  Future<void> markPaymentPaidByWeek(String milkmanId, DateTime weekStart) =>
+      _run(() async {
+        await _dio.patch('/milkmen/$milkmanId/payments/mark-paid',
+            data: {'week_start_date': weekStart.toUtc().toIso8601String()});
       });
 
   // ─── PRINT JOBS ─────────────────────────────────────────────────────────────

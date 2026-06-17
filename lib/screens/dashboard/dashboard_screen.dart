@@ -44,6 +44,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _refresh() async {
+    await context.read<AppProvider>().db.syncNow();
     final f = _load();
     setState(() => _future = f);
     await f.catchError((_) => _DashboardData([], []));

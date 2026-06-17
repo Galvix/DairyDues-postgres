@@ -1,19 +1,22 @@
 // lib/database/models.dart
 //
-// Plain JSON (de)serialization for the FastAPI + PostgreSQL backend.
+// Plain JSON (de)serialization for the FastAPI + PostgreSQL backend, and for the
+// local offline-first cache.
 // - Postgres PKs are uuid -> represented as Dart String (model `id` stays String).
+//   For offline-first, ids are generated client-side (uuid v4) and the backend
+//   upserts by them, so create bodies include `id`.
 // - timestamptz / date fields are ISO-8601 strings, parsed to local DateTime.
 // - JSON keys are snake_case to match the backend Pydantic models.
+// - toCacheJson() produces the full server-shaped record persisted locally; it
+//   round-trips back through fromJson().
 
 /// Parse an ISO-8601 timestamptz/date string into a local DateTime.
-/// Backend sends timestamptz with offset (…Z) and `date` as "YYYY-MM-DD".
 DateTime _parseDate(dynamic value) {
   if (value == null) return DateTime.now();
   if (value is DateTime) return value;
   return DateTime.parse(value as String).toLocal();
 }
 
-/// Numeric fields arrive as JSON numbers (Pydantic floats). Be tolerant of ints.
 double _toDouble(dynamic value) =>
     value == null ? 0.0 : (value as num).toDouble();
 
@@ -53,8 +56,20 @@ class Milkman {
         isActive: d['is_active'] ?? true,
       );
 
-  /// Body for POST /milkmen/ and PATCH /milkmen/{id}.
+  /// Body for POST /milkmen/ and PATCH /milkmen/{id}. Includes `id` so the POST
+  /// upserts by the client-generated id (ignored by the PATCH update model).
   Map<String, dynamic> toJson() => {
+        if (id.isNotEmpty) 'id': id,
+        'name': name,
+        'milk_rate': milkRate,
+        'khoya_rate': khoyaRate,
+        'supplies_khoya': suppliesKhoya,
+        'is_active': isActive,
+      };
+
+  /// Full server-shaped record for the local cache.
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
         'name': name,
         'milk_rate': milkRate,
         'khoya_rate': khoyaRate,
@@ -63,6 +78,7 @@ class Milkman {
       };
 
   Milkman copyWith({
+    String? id,
     String? name,
     double? milkRate,
     double? khoyaRate,
@@ -70,7 +86,7 @@ class Milkman {
     bool? isActive,
   }) =>
       Milkman(
-        id: id,
+        id: id ?? this.id,
         name: name ?? this.name,
         milkRate: milkRate ?? this.milkRate,
         khoyaRate: khoyaRate ?? this.khoyaRate,
@@ -114,13 +130,25 @@ class MilkDelivery {
         notes: d['notes'] ?? '',
       );
 
-  /// Body for POST /milkmen/{milkman_id}/deliveries.
-  /// milkman_id is a path param; billable_milk is set server-side (= net_milk).
+  /// Body for POST /milkmen/{milkman_id}/deliveries (milkman_id is a path param).
   Map<String, dynamic> toCreateJson() => {
+        if (id.isNotEmpty) 'id': id,
         'delivery_date': _isoTimestamp(deliveryDate),
         'gross_weight': grossWeight,
         'can_weight': canWeight,
         'net_milk': netMilk,
+        'notes': notes,
+      };
+
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
+        'milkman_id': milkmanId,
+        'delivery_date': _isoTimestamp(deliveryDate),
+        'gross_weight': grossWeight,
+        'can_weight': canWeight,
+        'net_milk': netMilk,
+        'billable_milk': billableMilk,
+        'paneer_adjusted': paneerAdjusted,
         'notes': notes,
       };
 }
@@ -150,6 +178,15 @@ class KhoyaDelivery {
 
   /// Body for POST /milkmen/{milkman_id}/khoya (milkman_id is a path param).
   Map<String, dynamic> toCreateJson() => {
+        if (id.isNotEmpty) 'id': id,
+        'delivery_date': _isoTimestamp(deliveryDate),
+        'weight': weight,
+        'notes': notes,
+      };
+
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
+        'milkman_id': milkmanId,
         'delivery_date': _isoTimestamp(deliveryDate),
         'weight': weight,
         'notes': notes,
@@ -200,10 +237,9 @@ class PaneerEntry {
       );
 
   /// Body for POST /milkmen/{milkman_id}/paneer. The backend computes
-  /// yield_ratio, adjusted_milk_total and adjustment_applied itself, so they
-  /// are not sent. Both milkman_id and delivery_id are required by the
-  /// PaneerEntryCreate model. entry_date is a calendar `date`.
+  /// yield_ratio / adjusted_milk_total / adjustment_applied itself.
   Map<String, dynamic> toCreateJson() => {
+        if (id.isNotEmpty) 'id': id,
         'milkman_id': milkmanId,
         'delivery_id': deliveryId,
         'entry_date': _isoDate(entryDate),
@@ -211,6 +247,20 @@ class PaneerEntry {
         'expected_paneer': expectedPaneer,
         'actual_paneer': actualPaneer,
         'tolerance_kg': toleranceKg,
+      };
+
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
+        'milkman_id': milkmanId,
+        'delivery_id': deliveryId,
+        'entry_date': _isoDate(entryDate),
+        'total_milk_used': totalMilkUsed,
+        'expected_paneer': expectedPaneer,
+        'actual_paneer': actualPaneer,
+        'yield_ratio': yieldRatio,
+        'tolerance_kg': toleranceKg,
+        'adjustment_applied': adjustmentApplied,
+        'adjusted_milk_total': adjustedMilkTotal,
       };
 }
 
@@ -239,6 +289,15 @@ class Loan {
 
   /// Body for POST /milkmen/{milkman_id}/loans (milkman_id is a path param).
   Map<String, dynamic> toCreateJson() => {
+        if (id.isNotEmpty) 'id': id,
+        'amount': amount,
+        'loan_date': _isoTimestamp(loanDate),
+        'notes': notes,
+      };
+
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
+        'milkman_id': milkmanId,
         'amount': amount,
         'loan_date': _isoTimestamp(loanDate),
         'notes': notes,
@@ -261,7 +320,6 @@ class WeeklyPayment {
   final double loanCarryForward;
   final bool isPaid;
   final DateTime? paidAt;
-  // Snapshotted rates at settlement time (new vs the old Firestore model).
   final double milkRateApplied;
   final double khoyaRateApplied;
 
@@ -286,7 +344,7 @@ class WeeklyPayment {
   });
 
   factory WeeklyPayment.fromJson(Map<String, dynamic> d) => WeeklyPayment(
-        id: d['id'] as String,
+        id: (d['id'] ?? '') as String,
         milkmanId: d['milkman_id'] ?? '',
         weekStartDate: _parseDate(d['week_start_date']),
         weekEndDate: _parseDate(d['week_end_date']),
@@ -305,7 +363,7 @@ class WeeklyPayment {
         khoyaRateApplied: _toDouble(d['khoya_rate_applied']),
       );
 
-  /// Body for POST /milkmen/{milkman_id}/payments (upsert).
+  /// Body for POST /milkmen/{milkman_id}/payments (upsert by milkman+week).
   Map<String, dynamic> toCreateJson() => {
         'week_start_date': _isoTimestamp(weekStartDate),
         'week_end_date': _isoTimestamp(weekEndDate),
@@ -321,6 +379,13 @@ class WeeklyPayment {
         'is_paid': isPaid,
         'milk_rate_applied': milkRateApplied,
         'khoya_rate_applied': khoyaRateApplied,
+      };
+
+  Map<String, dynamic> toCacheJson() => {
+        'id': id,
+        'milkman_id': milkmanId,
+        ...toCreateJson(),
+        'paid_at': paidAt == null ? null : _isoTimestamp(paidAt!),
       };
 }
 

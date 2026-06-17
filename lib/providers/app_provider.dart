@@ -1,11 +1,11 @@
 // lib/providers/app_provider.dart
 import 'package:flutter/foundation.dart';
-import '../database/api_service.dart';
+import '../database/repository.dart';
 import '../database/models.dart';
 import '../utils/payment_calculator.dart';
 
 class AppProvider extends ChangeNotifier {
-  final ApiService db;
+  final Repository db;
 
   AppProvider(this.db);
 

@@ -4,8 +4,12 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 
 import 'database/api_service.dart';
+import 'database/local_store.dart';
+import 'database/repository.dart';
+import 'database/sync_service.dart';
 import 'providers/app_provider.dart';
 import 'theme/app_theme.dart';
+import 'widgets/sync_status_banner.dart';
 import 'screens/dashboard/dashboard_screen.dart';
 import 'screens/milkmen/milkmen_screen.dart';
 import 'screens/daily_entry/daily_entry_screen.dart';
@@ -20,19 +24,27 @@ void main() async {
   // Load API base URL + token from the gitignored .env (see .env.example).
   await dotenv.load(fileName: '.env');
 
-  final db = ApiService();
+  // Offline-first stack: local cache + outbox -> network -> sync engine.
+  final store = LocalStore();
+  await store.init();
+  final api = ApiService();
+  final syncService = SyncService(api, store);
+  final db = Repository(api, store, syncService);
+
   final provider = AppProvider(db);
-  // Settings come from the backend; if it's unreachable at launch we still open
-  // the app with sensible defaults and each screen surfaces its own retry.
-  try {
-    await provider.loadSettings();
-  } catch (_) {
-    // ignored — defaults stand until the next successful settings load
-  }
+  // Settings are read from the local cache (offline-safe); seeded values match
+  // the backend defaults until the first sync refreshes them.
+  await provider.loadSettings();
+
+  // Kick connectivity listening + an initial pull in the background.
+  syncService.start();
 
   runApp(
-    ChangeNotifierProvider.value(
-      value: provider,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: provider),
+        ChangeNotifierProvider.value(value: syncService),
+      ],
       child: const DairyApp(),
     ),
   );
@@ -120,14 +132,22 @@ class _MainShellState extends State<MainShell> {
                   .toList(),
             ),
             const VerticalDivider(width: 1),
-            Expanded(child: _screens[_selectedIndex]),
+            Expanded(
+              child: Column(children: [
+                const SyncStatusBanner(),
+                Expanded(child: _screens[_selectedIndex]),
+              ]),
+            ),
           ],
         ),
       );
     }
 
     return Scaffold(
-      body: _screens[_selectedIndex],
+      body: Column(children: [
+        const SyncStatusBanner(),
+        Expanded(child: _screens[_selectedIndex]),
+      ]),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (i) => setState(() => _selectedIndex = i),
