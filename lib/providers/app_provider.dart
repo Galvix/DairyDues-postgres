@@ -1,11 +1,11 @@
 // lib/providers/app_provider.dart
 import 'package:flutter/foundation.dart';
-import '../database/firestore_service.dart';
+import '../database/api_service.dart';
 import '../database/models.dart';
 import '../utils/payment_calculator.dart';
 
 class AppProvider extends ChangeNotifier {
-  final FirestoreService db;
+  final ApiService db;
 
   AppProvider(this.db);
 
@@ -66,16 +66,26 @@ class AppProvider extends ChangeNotifier {
   }
 
   // ─── PANEER VALIDATION ────────────────────────────────────────────────────
-
+  //
+  // The billable_milk adjustment now lives SERVER-SIDE: POSTing a paneer entry
+  // makes the backend compute yield_ratio = actual/expected and write
+  // billable_milk = net_milk * yield_ratio onto that delivery (see api/app/
+  // routers/deliveries.py:create_paneer_entry). The backend ties each test to
+  // ONE delivery, so to reproduce the old "adjust the whole day for this milkman"
+  // behaviour we post one test per delivery the milkman made that day.
+  //
+  // The returned PaneerValidation is computed client-side purely for the result
+  // dialog / live preview (display logic, unchanged).
   Future<PaneerValidation> validateAndSavePaneerForMilkman({
     required DateTime date,
     required String milkmanId,
     required double samplePaneerKg,
   }) async {
-    final deliveries = await db.getAllDeliveriesForDate(date);
-    final milkmanMilk = deliveries
-        .where((d) => d.milkmanId == milkmanId)
-        .fold<double>(0.0, (s, d) => s + d.netMilk);
+    final deliveries = await db.getDeliveriesForDate(date);
+    final myDeliveries =
+        deliveries.where((d) => d.milkmanId == milkmanId).toList();
+    final milkmanMilk =
+        myDeliveries.fold<double>(0.0, (s, d) => s + d.netMilk);
 
     final validation = PaneerValidation.validate(
       netMilkTotal: milkmanMilk,
@@ -83,30 +93,28 @@ class AppProvider extends ChangeNotifier {
       standardPaneerKg: _standardPaneerKg,
     );
 
-    await db.addPaneerEntry(PaneerEntry(
-      id: '',
-      milkmanId: milkmanId,
-      entryDate: date,
-      totalMilkUsed: milkmanMilk,
-      expectedPaneer: _standardPaneerKg,
-      actualPaneer: samplePaneerKg,
-      yieldRatio: validation.effectiveRatio,
-      toleranceKg: 0,
-      adjustmentApplied: validation.adjustmentNeeded,
-      adjustedMilkTotal:
-          validation.adjustmentNeeded ? validation.adjustedMilkTotal : null,
-    ));
-
-    if (validation.adjustmentNeeded) {
-      await db.applyPaneerAdjustmentForMilkman(
-          date, milkmanId, validation.effectiveRatio);
+    for (final d in myDeliveries) {
+      await db.createPaneerEntry(
+        milkmanId: milkmanId,
+        deliveryId: d.id,
+        entryDate: date,
+        totalMilkUsed: milkmanMilk,
+        expectedPaneer: _standardPaneerKg,
+        actualPaneer: samplePaneerKg,
+        toleranceKg: 0,
+      );
     }
 
     return validation;
   }
 
   // ─── WEEKLY PAYMENT ───────────────────────────────────────────────────────
-
+  //
+  // Weekly aggregation stays client-side (WeeklyPaymentSummary.calculate). The
+  // backend's GET /milkmen/{id}/hisab is intentionally NOT used because it lacks
+  // the carry-forward / week-windowed-loan logic this UI depends on — see the
+  // BACKEND GAPS note in MIGRATION_REPORT.md. It reads billable_milk, which the
+  // server already adjusts for paneer tests.
   Future<List<WeeklyPaymentSummary>> calculateWeeklyPayments(
       DateTime weekStart) async {
     final milkmen = await db.getActiveMilkmen();
@@ -149,6 +157,9 @@ class AppProvider extends ChangeNotifier {
           carriedOverLoan: carriedOver,
           netPayable: summary.netPayable,
           loanCarryForward: summary.loanCarryForward,
+          // Snapshot the rates used for this settlement.
+          milkRateApplied: m.milkRate,
+          khoyaRateApplied: m.khoyaRate,
         ));
       }
     }
