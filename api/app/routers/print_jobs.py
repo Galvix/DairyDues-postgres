@@ -4,7 +4,6 @@
 #   • Flutter app  — creates jobs, checks status        (API_TOKEN)
 #   • Print agent  — polls for pending, marks done/fail (PRINT_AGENT_TOKEN)
 
-import json
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.auth import require_auth, require_agent_auth
@@ -29,7 +28,7 @@ async def create_print_job(
         RETURNING id, job_type, params, status, attempts, error,
                   created_at, updated_at, printed_at
         """,
-        body.job_type, json.dumps(body.params),
+        body.job_type, body.params,
     )
     return dict(row)
 

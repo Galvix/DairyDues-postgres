@@ -1,14 +1,8 @@
 # /srv/dairydues/docker-compose.yml
-#
-# Self-contained DairyDues stack. Everything it needs (data, secrets, uploads)
-# lives in this folder, so migrating to new hardware is: rsync -a /srv/dairydues
-# to the new host, `docker network create proxy` once, then `docker compose up -d`.
-#
-# Secrets come from a sibling .env file (gitignored). See .env.example.
 
 services:
   db:
-    image: postgres:18-alpine          # pinned tag — updates are deliberate
+    image: postgres:18-alpine
     container_name: dairydues-db
     restart: unless-stopped
     env_file: .env
@@ -17,11 +11,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      # Bind mount, NOT a named volume — the data lives inside this folder
-      # so it copies with the folder. Use `rsync -a` to preserve ownership.
-      - ./data/postgres:/var/lib/postgresql/data
+      - ./postgres/data:/var/lib/postgresql
+      - ./postgres/init/01_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     networks:
-      - internal                       # db is reachable ONLY by the api
+      - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -29,37 +22,24 @@ services:
       retries: 5
 
   api:
-    build: ./api                       # your FastAPI / dart_frog service
+    build: ./api
     container_name: dairydues-api
     restart: unless-stopped
     env_file: .env
     environment:
-      # The API connects to the db by its service name over the internal network.
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      API_TOKEN: ${API_TOKEN}          # app auth (replaces what Firebase gave you)
-      PRINT_AGENT_TOKEN: ${PRINT_AGENT_TOKEN}  # separate token for the home printer agent
+      DATABASE_URL: ${DATABASE_URL}
+      API_TOKEN: ${API_TOKEN}
+      PRINT_AGENT_TOKEN: ${PRINT_AGENT_TOKEN}
     volumes:
-      # Generated PDF slips persist on the host, surviving container rebuilds.
       - ./data/uploads:/app/uploads
+    ports:
+      - "8000:8000"
     depends_on:
       db:
-        condition: service_healthy     # wait for Postgres to actually accept connections
+        condition: service_healthy
     networks:
-      - internal                       # to reach the db
-      - proxy                          # to be reached by the reverse proxy
-    # No published ports: the reverse proxy (separate stack) reaches `api` by
-    # name over the shared `proxy` network, and the home print agent polls
-    # through that proxy over Tailscale/HTTPS. Uncomment below ONLY for local
-    # debugging directly on the Pi:
-    # ports:
-    #   - "127.0.0.1:8000:8000"
+      - internal
 
 networks:
   internal:
-    # Private network for db <-> api only. Not reachable from other stacks.
     driver: bridge
-
-  proxy:
-    # Shared with your reverse-proxy stack. Create it once on each machine:
-    #   docker network create proxy
-    external: true

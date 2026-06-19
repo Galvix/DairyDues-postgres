@@ -30,7 +30,7 @@ class ApiService {
   late final Dio _dio;
 
   ApiService({Dio? dio}) {
-    final baseUrl = (dotenv.env['API_BASE_URL'] ?? '').trim();
+    final baseUrl = '${(dotenv.env['API_BASE_URL'] ?? '').trim()}/api/v1';
     final token = (dotenv.env['API_TOKEN'] ?? '').trim();
 
     _dio = dio ??

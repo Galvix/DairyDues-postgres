@@ -10,7 +10,7 @@ def _bearer(authorization: str | None) -> str:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header",
         )
-    return authorization.remove_prefix("Bearer ").strip()
+    return authorization.removeprefix("Bearer ").strip()
 
 async def require_auth(authorization: str | None = Header(default=None)) -> None:
     """Dependency to require a valid API token in the Authorization header."""
