@@ -46,9 +46,12 @@ class SyncStatusBanner extends StatelessWidget {
     } else if (offline) {
       color = AppTheme.warning;
       icon = Icons.cloud_off;
-      text = pending > 0
-          ? 'Offline — $pending change${pending == 1 ? '' : 's'} queued'
-          : 'Offline — showing saved data';
+      final err = sync.lastError;
+      text = err != null
+          ? 'Offline — $err'
+          : pending > 0
+              ? 'Offline — $pending change${pending == 1 ? '' : 's'} queued'
+              : 'Offline — showing saved data';
     } else if (pending > 0) {
       color = AppTheme.warning;
       icon = Icons.cloud_upload_outlined;

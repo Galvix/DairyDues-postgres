@@ -100,54 +100,59 @@ class _MainShellState extends State<MainShell> {
 
     if (isWide) {
       return Scaffold(
-        body: Row(
-          children: [
-            NavigationRail(
-              extended: MediaQuery.of(context).size.width > 1100,
-              selectedIndex: _selectedIndex,
-              onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-              leading: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 20),
+        body: SafeArea(
+          bottom: false,
+          child: Row(
+            children: [
+              NavigationRail(
+                extended: MediaQuery.of(context).size.width > 1100,
+                selectedIndex: _selectedIndex,
+                onDestinationSelected: (i) => setState(() => _selectedIndex = i),
+                leading: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Column(children: [
+                    Container(
+                      width: 128,
+                      height: 128,
+                      child: Image.asset('assets/logo.png'),
+                    ),
+                    const SizedBox(height: 4),
+                    if (MediaQuery.of(context).size.width > 1100)
+                      const Text('DairyDues',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold)),
+                  ]),
+                ),
+                destinations: _navItems
+                    .map((item) => NavigationRailDestination(
+                          icon: Icon(item.icon),
+                          label: Text(item.label),
+                        ))
+                    .toList(),
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(
                 child: Column(children: [
-                  //const Icon(Icons.water_drop, color: Colors.white, size: 32),
-                  Container(
-                    width: 128,
-                    height: 128,
-                    child: Image.asset('assets/logo.png'),
-                  ),
-                  const SizedBox(height: 4),
-                  if (MediaQuery.of(context).size.width > 1100)
-                    const Text('DairyDues',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold)),
+                  const SyncStatusBanner(),
+                  Expanded(child: _screens[_selectedIndex]),
                 ]),
               ),
-              destinations: _navItems
-                  .map((item) => NavigationRailDestination(
-                        icon: Icon(item.icon),
-                        label: Text(item.label),
-                      ))
-                  .toList(),
-            ),
-            const VerticalDivider(width: 1),
-            Expanded(
-              child: Column(children: [
-                const SyncStatusBanner(),
-                Expanded(child: _screens[_selectedIndex]),
-              ]),
-            ),
-          ],
+            ],
+          ),
         ),
       );
     }
 
     return Scaffold(
-      body: Column(children: [
-        const SyncStatusBanner(),
-        Expanded(child: _screens[_selectedIndex]),
-      ]),
+      body: SafeArea(
+        bottom: false,
+        child: Column(children: [
+          const SyncStatusBanner(),
+          Expanded(child: _screens[_selectedIndex]),
+        ]),
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (i) => setState(() => _selectedIndex = i),
